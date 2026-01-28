@@ -57,6 +57,10 @@ library(forcats)
 library(car)
 library(pROC)
 
+# Ustawienie spójnego wyglądu wykresów
+theme_set(theme_minimal(base_size = 12))
+theme_update(plot.title = element_text(face = "bold"))
+
 # Wczytanie danych (plik ma leżeć w tym samym folderze co .Rmd)
 data_file_name <- "Students Social Media Addiction.csv"
 
@@ -206,24 +210,40 @@ W kolejnych częściach raportu przedstawiono: (1) podstawowe przygotowanie dany
 
 ### 1.1 Podgląd danych {#podglad}
 
-```{r podglad}
-cat("Liczba wierszy:", nrow(d), "\n")
-cat("Liczba kolumn:", ncol(d), "\n\n")
+```{r podglad, results='asis'}
+cat("Liczba wierszy:", nrow(d), "
+")
+cat("Liczba kolumn:", ncol(d), "
 
-# podgląd struktury
-str(d)
+")
 
-# pierwsze wiersze
-head(d)
+# Zamiast surowego str() robimy krótką tabelę metadanych
+meta_tbl <- tibble(
+  zmienna = names(d),
+  typ = sapply(d, function(x) class(x)[1]),
+  braki_NA = colSums(is.na(d)),
+  unikalne = sapply(d, function(x) dplyr::n_distinct(x))
+)
+
+knitr::kable(
+  meta_tbl,
+  caption = "Szybki opis zmiennych: typ danych, liczba braków i liczba unikalnych wartości",
+  align = "l"
+)
+
+knitr::kable(
+  head(d, 8),
+  caption = "Podgląd pierwszych 8 wierszy danych"
+)
 ```
 
 Ten chunk to szybki **check**, czy dane wczytały się poprawnie:
 
 - `nrow()` i `ncol()` mówią, ile jest obserwacji i zmiennych,
-- `str(d)` pokazuje typy kolumn (czy liczby są liczbami, a kategorie są tekstem/faktorem),
-- `head(d)` daje podgląd pierwszych rekordów i pozwala zauważyć oczywiste problemy (np. dziwne wartości).
+- tabela metadanych pokazuje typ danych, liczbę braków (NA) i liczbę unikalnych wartości,
+- na końcu jest podgląd kilku pierwszych wierszy, żeby złapać oczywiste błędy.
 
-To jest ważne, bo jeśli na tym etapie coś jest „nie tak”, to późniejsze wykresy, testy i modele mogą wyjść błędnie.
+To ważne, bo jeśli na tym etapie coś jest „nie tak”, to późniejsze wykresy, testy i modele mogą wyjść błędnie.
 
 
 ## 2. Czyszczenie danych {#czyszczenie}
@@ -304,14 +324,70 @@ Wynik `stats_tbl` to jedna tabela, która pozwala szybko porównać skale i rozr
 
 ## 4. Korelacje {#korelacje}
 
-```{r korelacje}
+```{r korelacje, results='asis'}
 num_vars <- d %>%
   select(where(is.numeric)) %>%
   select(-any_of("Student_ID"))
 
-cor_mat <- cor(num_vars, use = "pairwise.complete.obs")
+# Spearman: lepszy dla skal punktowych (0-10) i danych z remisami
+cor_mat <- cor(num_vars, use = "pairwise.complete.obs", method = "spearman")
 
-corrplot(cor_mat, method = "square", type = "upper", order = "hclust")
+# macierz p-value dla korelacji (żeby nie brać na wiarę samych kolorów)
+cor_pmat <- function(df) {
+  m <- as.matrix(df)
+  n <- ncol(m)
+  p <- matrix(NA_real_, n, n)
+  diag(p) <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      ct <- suppressWarnings(cor.test(m[, i], m[, j], method = "spearman", exact = FALSE))
+      p[i, j] <- ct$p.value
+      p[j, i] <- ct$p.value
+    }
+  }
+  colnames(p) <- colnames(m)
+  rownames(p) <- colnames(m)
+  p
+}
+p_mat <- cor_pmat(num_vars)
+
+corrplot(
+  cor_mat,
+  method = "color",
+  type = "upper",
+  order = "hclust",
+  addCoef.col = "black",
+  tl.cex = 0.8,
+  number.cex = 0.7,
+  p.mat = p_mat,
+  sig.level = 0.05,
+  insig = "blank"
+)
+
+# krótka tabelka: czas w SM vs kluczowe wskaźniki
+if ("Avg_Daily_Usage_Hours" %in% names(d)) {
+  key_vars <- c("Addicted_Score","Sleep_Hours_Per_Night","Mental_Health_Score","Conflicts_Over_Social_Media")
+  key_vars <- intersect(key_vars, names(d))
+
+  corr_key <- purrr::map_dfr(key_vars, function(v) {
+    ct <- suppressWarnings(cor.test(d$Avg_Daily_Usage_Hours, d[[v]], method = "spearman", exact = FALSE))
+    tibble(
+      y = v,
+      rho = as.numeric(ct$estimate),
+      p = ct$p.value
+    )
+  }) %>%
+    mutate(
+      rho = round(rho, 3),
+      p = signif(p, 3)
+    )
+
+  knitr::kable(
+    corr_key,
+    caption = "Wybrane korelacje Spearmana: czas w SM vs kluczowe wskaźniki",
+    align = "l"
+  )
+}
 ```
 
 W tym fragmencie obliczamy i pokazujemy **korelacje** między zmiennymi liczbowymi.
@@ -330,109 +406,119 @@ W tej sekcji przedstawiono **analizę wizualną** zależności pomiędzy czasem 
 (uzależnienie, sen, dobrostan psychiczny, konflikty). Celem jest wstępne rozpoznanie **kierunku i siły
 związku** oraz sprawdzenie, czy w danych widać trendy, które potem testujemy w części statystycznej.
 
-Wykorzystano wykresy rozrzutu (pojedyncze obserwacje) wraz z dopasowaniem liniowym (OLS) i pasmem
-niepewności (przedział ufności). Tego typu wykresy są użyteczne do oceny, czy relacja jest w przybliżeniu
-liniowa, oraz czy występują obserwacje odstające lub duży rozrzut.
+Wykorzystano porównanie **grup czasu w SM** (np. <=2h, 2–4h, ...), pokazane jako **boxploty** z punktami (jitter).
+Takie podejście jest bardziej czytelne dla zmiennych w skali punktowej 0–10 (uzależnienie, zdrowie psychiczne, konflikty),
+bo wartości są dyskretne i na wykresach nie powstają „paski” jak przy klasycznym scatter.
 
 Ważne: są to zależności **obserwacyjne**. Nawet jeśli trend jest wyraźny, nie oznacza to jeszcze związku
 przyczynowego (możliwe zmienne trzecie, np. styl życia, stres, obowiązki).
 
+```{r przygotuj_grupy_uzycia}
+# Skale punktowe (np. 0-10) są dyskretne/porządkowe.
+# Dlatego poniżej porównujemy je w grupach czasu spędzanego w SM.
+if ("Avg_Daily_Usage_Hours" %in% names(d)) {
+  d <- d %>%
+    mutate(
+      Usage_Group = cut(
+        Avg_Daily_Usage_Hours,
+        breaks = c(-Inf, 2, 4, 6, 8, Inf),
+        labels = c("<=2 h", "2-4 h", "4-6 h", "6-8 h", ">8 h"),
+        right = TRUE
+      )
+    )
+}
+```
+
+
 ### 5.1 Czas w SM vs uzależnienie {#wykres_addicted}
 
 ```{r wykres_addicted}
-# Czas w SM vs uzależnienie
+# Czas w SM (w grupach) vs uzależnienie (skala 0-10)
 
-ggplot(d, aes(x = Avg_Daily_Usage_Hours, y = Addicted_Score)) +
-  geom_point(alpha = 0.4) +
-  geom_smooth(method = "lm", se = TRUE) +
-  labs(title = "Czas w social mediach a poziom uzależnienia",
-       x = "Godziny dziennie",
-       y = "Addicted_Score")
+ggplot(d, aes(x = Usage_Group, y = Addicted_Score)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.15, alpha = 0.25) +
+  labs(
+    title = "Czas w social mediach a poziom uzależnienia (porównanie grup)",
+    x = "Czas w SM (godz./dzień, grupy)",
+    y = "Wskaźnik uzależnienia (0-10)"
+  )
 ```
 
 Ten wykres sprawdza, czy osoby spędzające więcej czasu w social mediach mają wyższy wynik `Addicted_Score`.
 
-- Jeśli linia trendu idzie w górę, to sugeruje dodatnią zależność: więcej godzin w SM wiąże się z wyższym poziomem uzależnienia.
-- Szeroki pas niepewności lub duży rozrzut punktów oznacza, że u różnych osób przy tym samym czasie w SM wynik uzależnienia może być bardzo różny.
+- Patrzymy głównie na **medianę** (linia w środku pudełka). Jeśli mediana rośnie wraz z grupą czasu, to sugeruje, że dłuższe korzystanie wiąże się z wyższym uzależnieniem.
+- Jeżeli pudełka mocno się nakładają, to różnice między grupami są raczej słabe (duży rozrzut indywidualny).
 
 ### 5.2 Czas w SM vs sen {#wykres_sen}
 
 ```{r wykres_sen}
-# Czas w SM vs sen
+# Czas w SM (w grupach) vs sen
 
-ggplot(d, aes(x = Avg_Daily_Usage_Hours, y = Sleep_Hours_Per_Night)) +
-  geom_point(alpha = 0.4) +
-  geom_smooth(method = "lm", se = TRUE) +
-  labs(title = "Czas w social mediach a sen",
-       x = "Godziny dziennie",
-       y = "Sleep_Hours_Per_Night")
+ggplot(d, aes(x = Usage_Group, y = Sleep_Hours_Per_Night)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.15, alpha = 0.25) +
+  labs(
+    title = "Czas w social mediach a sen (porównanie grup)",
+    x = "Czas w SM (godz./dzień, grupy)",
+    y = "Sen (godz./noc)"
+  )
 ```
 
 Ten wykres pokazuje związek między czasem w SM a liczbą godzin snu.
 
-- Jeśli trend jest malejący, sugeruje to, że większe korzystanie z SM wiąże się ze skracaniem snu.
-- Jeżeli punkty są mocno rozproszone, to znaczy, że sen zależy też od innych czynników i sam czas w SM nie tłumaczy wszystkiego.
+- Jeśli mediany snu są niższe w grupach z większym czasem w SM, to sugeruje, że więcej SM idzie w parze z krótszym snem.
+- Rozrzut w grupach pokazuje, że sen zależy też od innych czynników (czas w SM nie tłumaczy wszystkiego).
 
 ### 5.3 Czas w SM vs zdrowie psychiczne {#wykres_mh}
 
 ```{r wykres_mh}
-# Czas w SM vs zdrowie psychiczne
+# Czas w SM (w grupach) vs zdrowie psychiczne (skala 0-10)
 
-ggplot(d, aes(x = Avg_Daily_Usage_Hours, y = Mental_Health_Score)) +
-  geom_point(alpha = 0.4) +
-  geom_smooth(method = "lm", se = TRUE) +
-  labs(title = "Czas w social mediach a Mental_Health_Score",
-       x = "Godziny dziennie",
-       y = "Mental_Health_Score")
+ggplot(d, aes(x = Usage_Group, y = Mental_Health_Score)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.15, alpha = 0.25) +
+  labs(
+    title = "Czas w social mediach a zdrowie psychiczne (porównanie grup)",
+    x = "Czas w SM (godz./dzień, grupy)",
+    y = "Wskaźnik zdrowia psychicznego (0-10)"
+  )
 ```
 
 Ten wykres sprawdza, czy wraz ze wzrostem czasu korzystania z SM zmienia się `Mental_Health_Score`.
 
-- Jeżeli linia trendu spada, to sugeruje, że dłuższe korzystanie z SM wiąże się z niższym wynikiem zdrowia psychicznego (w tej skali).
-- Jeżeli trend jest prawie płaski, to wizualnie wygląda na słabą zależność liniową.
+- Jeśli mediany są niższe w grupach z większym czasem w SM, to sugeruje gorszy wynik zdrowia psychicznego przy dłuższym korzystaniu (w tej skali).
+- Jeżeli pudełka są podobne w każdej grupie, to wizualnie wygląda to na słabą zależność.
 
 ### 5.4 Czas w SM vs konflikty {#wykres_konflikty}
 
 ```{r wykres_konflikty}
-# Czas w SM vs konflikty
+# Czas w SM (w grupach) vs konflikty (skala 0-10)
 
-ggplot(d, aes(x = Avg_Daily_Usage_Hours, y = Conflicts_Over_Social_Media)) +
-  geom_point(alpha = 0.4) +
-  geom_smooth(method = "lm", se = TRUE) +
-  labs(title = "Czas w social mediach a konflikty przez SM",
-       x = "Godziny dziennie",
-       y = "Conflicts_Over_Social_Media")
+ggplot(d, aes(x = Usage_Group, y = Conflicts_Over_Social_Media)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.15, alpha = 0.25) +
+  labs(
+    title = "Czas w social mediach a konflikty przez SM (porównanie grup)",
+    x = "Czas w SM (godz./dzień, grupy)",
+    y = "Konflikty przez SM (0-10)"
+  )
 ```
 
 Ten wykres pokazuje, czy częstsze korzystanie z social mediów wiąże się z większą liczbą konfliktów `Conflicts_Over_Social_Media`.
 
-- Oś X to deklarowany czas korzystania z SM (godziny dziennie), a oś Y to wynik `Conflicts_Over_Social_Media` (skala punktowa). Każdy punkt odpowiada jednej osobie.
-- Jeżeli linia trendu rośnie, to sugeruje dodatnią zależność: wraz ze wzrostem czasu w SM średnio rośnie także poziom raportowanych konfliktów. Tego typu konflikt może dotyczyć np. relacji z rodziną, partnerem, znajomymi albo napięć wynikających z komunikacji online.
-- Jednocześnie ważny jest **rozrzut punktów**: jeśli przy tym samym czasie korzystania część osób ma bardzo niskie, a część wysokie konflikty, to znaczy, że czas w SM nie jest jedynym czynnikiem. W praktyce konflikty mogą zależeć np. od stylu korzystania (scrollowanie vs dyskusje), relacji społecznych, stresu czy cech osobowości.
-- Zwróć uwagę, że `Conflicts_Over_Social_Media` często bywa zmienną „skokową” (np. całkowite wartości z kwestionariusza). Wtedy na wykresie mogą pojawić się poziome „paski” i duże nagromadzenia punktów. To jest normalne i wynika ze skali pomiaru.
-- Warto też sprawdzić, czy zależność jest w miarę liniowa. Czasami konflikty mogą rosnąć mocniej dopiero powyżej pewnego progu czasu (np. > 6 godzin). W takiej sytuacji prosta regresji liniowej jest tylko przybliżeniem i może nie oddawać dobrze „załamania” trendu.
-- Pojedyncze obserwacje odstające (np. bardzo dużo godzin i bardzo wysoki wynik konfliktów) mogą mocno wpływać na linię trendu. Dlatego ten wykres traktujemy jako etap eksploracyjny, a nie dowód przyczynowy.
+- Jeśli mediany konfliktów rosną wraz z grupą czasu w SM, to sugeruje dodatnią zależność.
+- Gdy w każdej grupie jest duży rozrzut, oznacza to, że konflikty zależą też od innych rzeczy (np. styl korzystania, relacje, stres).
 
 
 ```{r wykresy_png_setup, echo=FALSE, message=FALSE, warning=FALSE}
-# --- lokalizacja danych i folderu z PNG ---
-data_file_name <- "Students Social Media Addiction.csv"
-candidates <- c(".", "..", "../..")
+# Ten blok robi raport bardziej "samowystarczalny":
+# jeśli w folderze fig/ nie ma wymaganych obrazków, to tworzymy je na miejscu.
 
-data_file <- NA_character_
-for (dd in candidates) {
-  fp <- file.path(dd, data_file_name)
-  if (file.exists(fp)) { data_file <- fp; break }
-}
+fig_dir <- "fig"
+if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
 
-base_dir <- if (!is.na(data_file)) dirname(data_file) else "."
-
-# PNG mogą być zapisywane albo w katalogu raportu ("fig/"), albo obok danych (base_dir/fig)
-fig_dir_a <- "fig"
-fig_dir_b <- file.path(base_dir, "fig")
-
-if (!dir.exists(fig_dir_a)) dir.create(fig_dir_a, recursive = TRUE)
-if (!dir.exists(fig_dir_b)) dir.create(fig_dir_b, recursive = TRUE)
+png_file <- function(name) file.path(fig_dir, name)
 
 needed_png <- c(
   "01_platformy.png",
@@ -450,32 +536,153 @@ needed_png <- c(
   "13_roc_logit.png"
 )
 
-# wybierz folder, w którym jest więcej gotowych plików
-count_a <- sum(file.exists(file.path(fig_dir_a, needed_png)))
-count_b <- sum(file.exists(file.path(fig_dir_b, needed_png)))
-fig_dir  <- if (count_b > count_a) fig_dir_b else fig_dir_a
-
-missing_png <- needed_png[!file.exists(file.path(fig_dir, needed_png))]
-
-# spróbuj znaleźć skrypt (w katalogu raportu lub obok danych)
-script_candidates <- c(
-  "analiza_socialmedia_BEST_PLUS_FINAL.R",
-  file.path(base_dir, "analiza_socialmedia_BEST_PLUS_FINAL.R"),
-  file.path("..", "analiza_socialmedia_BEST_PLUS_FINAL.R")
-)
-script_fp <- script_candidates[file.exists(script_candidates)][1]
-
-# Jeżeli brakuje PNG i jest skrypt – spróbuj je wygenerować
-if (length(missing_png) > 0 && !is.na(script_fp) && file.exists(script_fp)) {
-  suppressWarnings(suppressMessages(
-    capture.output(source(script_fp, local = TRUE))
-  ))
+# helper do zapisu ggplot -> PNG
+save_gg <- function(name, p, w = 7, h = 4) {
+  ggsave(png_file(name), plot = p, width = w, height = h, dpi = 150)
 }
 
-# po ewentualnym generowaniu wybierz folder ponownie (tam, gdzie jest więcej plików)
-count_a <- sum(file.exists(file.path(fig_dir_a, needed_png)))
-count_b <- sum(file.exists(file.path(fig_dir_b, needed_png)))
-fig_dir  <- if (count_b > count_a) fig_dir_b else fig_dir_a
+# przygotuj grupy czasu w SM, jeśli jeszcze nie ma
+if ("Avg_Daily_Usage_Hours" %in% names(d) && !"Usage_Group" %in% names(d)) {
+  d <- d %>%
+    mutate(
+      Usage_Group = cut(
+        Avg_Daily_Usage_Hours,
+        breaks = c(-Inf, 2, 4, 6, 8, Inf),
+        labels = c("<=2 h", "2-4 h", "4-6 h", "6-8 h", ">8 h"),
+        right = TRUE
+      )
+    )
+}
+
+# 01: platformy
+if (!file.exists(png_file("01_platformy.png")) && "Most_Used_Platform" %in% names(d)) {
+  p <- ggplot(d, aes(x = Most_Used_Platform)) +
+    geom_bar() +
+    coord_flip() +
+    labs(title = "Najczęściej używana platforma", x = NULL, y = "Liczba osób")
+  save_gg("01_platformy.png", p, w = 7, h = 4.5)
+}
+
+# 02: histogram czasu w SM
+if (!file.exists(png_file("02_hist_uzycie.png")) && "Avg_Daily_Usage_Hours" %in% names(d)) {
+  p <- ggplot(d, aes(x = Avg_Daily_Usage_Hours)) +
+    geom_histogram(bins = 25) +
+    labs(title = "Rozkład czasu korzystania z social mediów", x = "Godz./dzień", y = "Liczba osób")
+  save_gg("02_hist_uzycie.png", p)
+}
+
+# 03: czas w SM (grupy) vs uzależnienie
+if (!file.exists(png_file("03_usage_vs_addicted.png")) && all(c("Usage_Group", "Addicted_Score") %in% names(d))) {
+  p <- ggplot(d, aes(x = Usage_Group, y = Addicted_Score)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.15, alpha = 0.25) +
+    labs(title = "Czas w SM a uzależnienie (grupy)", x = "Czas w SM", y = "Uzależnienie (0-10)")
+  save_gg("03_usage_vs_addicted.png", p)
+}
+
+# 04: sen vs uzależnienie (uzależnienie jako kategoria)
+if (!file.exists(png_file("04_sleep_vs_addicted.png")) && all(c("Sleep_Hours_Per_Night", "Addicted_Score") %in% names(d))) {
+  p <- ggplot(d, aes(x = factor(Addicted_Score), y = Sleep_Hours_Per_Night)) +
+    geom_boxplot() +
+    labs(title = "Sen a uzależnienie", x = "Uzależnienie (0-10)", y = "Sen (godz./noc)")
+  save_gg("04_sleep_vs_addicted.png", p, w = 8, h = 4)
+}
+
+# 05: czas w SM w grupach Yes/No
+if (!file.exists(png_file("05_box_yesno_usage.png")) && all(c("Affects_Academic_Performance", "Avg_Daily_Usage_Hours") %in% names(d))) {
+  p <- ggplot(d, aes(x = Affects_Academic_Performance, y = Avg_Daily_Usage_Hours)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.15, alpha = 0.25) +
+    labs(title = "Czas w SM w grupach Yes/No", x = "Wpływ na naukę (Yes/No)", y = "Godz./dzień")
+  save_gg("05_box_yesno_usage.png", p)
+}
+
+# 06: histogram uzależnienia
+if (!file.exists(png_file("06_hist_addicted.png")) && "Addicted_Score" %in% names(d)) {
+  p <- ggplot(d, aes(x = Addicted_Score)) +
+    geom_histogram(binwidth = 1, boundary = 0) +
+    labs(title = "Rozkład wskaźnika uzależnienia", x = "Uzależnienie (0-10)", y = "Liczba osób")
+  save_gg("06_hist_addicted.png", p)
+}
+
+# 07: uzależnienie w grupach Yes/No
+if (!file.exists(png_file("07_box_yesno_addicted.png")) && all(c("Affects_Academic_Performance", "Addicted_Score") %in% names(d))) {
+  p <- ggplot(d, aes(x = Affects_Academic_Performance, y = Addicted_Score)) +
+    geom_boxplot() +
+    geom_jitter(width = 0.15, alpha = 0.25) +
+    labs(title = "Uzależnienie w grupach Yes/No", x = "Wpływ na naukę (Yes/No)", y = "Uzależnienie (0-10)")
+  save_gg("07_box_yesno_addicted.png", p)
+}
+
+# 08: uzależnienie a platforma
+if (!file.exists(png_file("08_box_platform_addicted.png")) && all(c("Most_Used_Platform", "Addicted_Score") %in% names(d))) {
+  p <- ggplot(d, aes(x = Most_Used_Platform, y = Addicted_Score)) +
+    geom_boxplot() +
+    coord_flip() +
+    labs(title = "Uzależnienie a platforma", x = NULL, y = "Uzależnienie (0-10)")
+  save_gg("08_box_platform_addicted.png", p, w = 7, h = 5)
+}
+
+# 09: wiek vs uzależnienie
+if (!file.exists(png_file("09_age_vs_addicted.png")) && all(c("Age", "Addicted_Score") %in% names(d))) {
+  p <- ggplot(d, aes(x = Age, y = Addicted_Score)) +
+    geom_jitter(width = 0.15, height = 0.15, alpha = 0.25) +
+    geom_smooth(method = "loess", se = TRUE) +
+    labs(title = "Wiek a uzależnienie", x = "Wiek", y = "Uzależnienie (0-10)")
+  save_gg("09_age_vs_addicted.png", p)
+}
+
+# 10-11: diagnostyka modelu liniowego
+if (all(c("Addicted_Score", "Avg_Daily_Usage_Hours", "Sleep_Hours_Per_Night", "Age") %in% names(d))) {
+  lm_png <- lm(Addicted_Score ~ Avg_Daily_Usage_Hours + Sleep_Hours_Per_Night + Age, data = d)
+
+  if (!file.exists(png_file("10_lm_resid_fitted.png"))) {
+    png(png_file("10_lm_resid_fitted.png"), width = 1200, height = 800, res = 150)
+    plot(fitted(lm_png), resid(lm_png),
+         xlab = "Wartości dopasowane", ylab = "Reszty",
+         main = "Reszty vs dopasowanie")
+    abline(h = 0, lty = 2)
+    dev.off()
+  }
+
+  if (!file.exists(png_file("11_lm_qq.png"))) {
+    png(png_file("11_lm_qq.png"), width = 1200, height = 800, res = 150)
+    qqnorm(resid(lm_png), main = "Wykres Q-Q reszt")
+    qqline(resid(lm_png))
+    dev.off()
+  }
+}
+
+# 12: corrplot
+if (!file.exists(png_file("12_corrplot.png"))) {
+  num_vars2 <- d %>% select(where(is.numeric)) %>% select(-any_of("Student_ID"))
+  cm <- suppressWarnings(cor(num_vars2, use = "pairwise.complete.obs", method = "spearman"))
+  png(png_file("12_corrplot.png"), width = 1200, height = 900, res = 150)
+  corrplot(cm, method = "color", type = "upper", order = "hclust", addCoef.col = "black", tl.cex = 0.8, number.cex = 0.7)
+  dev.off()
+}
+
+# 13: ROC (model logistyczny)
+if (!file.exists(png_file("13_roc_logit.png")) &&
+    all(c("Affects_Academic_Performance", "Avg_Daily_Usage_Hours", "Sleep_Hours_Per_Night", "Age", "Gender", "Academic_Level") %in% names(d))) {
+
+  d_tmp <- d %>%
+    mutate(y_yes = ifelse(Affects_Academic_Performance == "Yes", 1, 0)) %>%
+    filter(!is.na(y_yes))
+
+  if (nrow(d_tmp) > 10 && length(unique(d_tmp$y_yes)) == 2) {
+    mlog <- glm(
+      y_yes ~ Avg_Daily_Usage_Hours + Sleep_Hours_Per_Night + Age + Gender + Academic_Level,
+      data = d_tmp, family = binomial
+    )
+    pr <- predict(mlog, type = "response")
+    roc_obj <- pROC::roc(d_tmp$y_yes, pr, quiet = TRUE)
+
+    png(png_file("13_roc_logit.png"), width = 1200, height = 800, res = 150)
+    plot(roc_obj, main = sprintf("ROC (AUC = %.3f)", pROC::auc(roc_obj)))
+    dev.off()
+  }
+}
 ```
 
 ### 5.5 Struktura wyboru platform {#png_platformy}
@@ -665,7 +872,7 @@ To porównanie jest ważne, bo pozwala sprawdzić, czy deklaracja „wpływa na 
 
 ### 6.1 Średnie w grupach Yes/No {#srednie_yesno}
 
-```{r srednie_yesno}
+```{r srednie_yesno, results='asis'}
 vars <- c(
   "Avg_Daily_Usage_Hours",
   "Sleep_Hours_Per_Night",
@@ -676,23 +883,30 @@ vars <- c(
 )
 vars <- intersect(vars, names(d))
 
-means_tbl <- d %>%
-  group_by(Affects_Academic_Performance) %>%
+means_long <- d %>%
+  select(Affects_Academic_Performance, all_of(vars)) %>%
+  pivot_longer(
+    cols = -Affects_Academic_Performance,
+    names_to = "zmienna",
+    values_to = "wartosc"
+  ) %>%
+  group_by(Affects_Academic_Performance, zmienna) %>%
   summarise(
-    n = n(),
-    across(
-      all_of(vars),
-      list(srednia = ~mean(.x, na.rm = TRUE), sd = ~sd(.x, na.rm = TRUE)),
-      .names = "{.col}_{.fn}"
-    ),
+    n = sum(!is.na(wartosc)),
+    srednia = mean(wartosc, na.rm = TRUE),
+    sd = sd(wartosc, na.rm = TRUE),
     .groups = "drop"
-  )
+  ) %>%
+  mutate(
+    wynik = sprintf("%.2f (%.2f)", srednia, sd)
+  ) %>%
+  select(Affects_Academic_Performance, zmienna, n, wynik)
 
-means_tbl %>%
-  knitr::kable(
-    digits = 2,
-    caption = "Średnie i odchylenia standardowe w grupach Affects_Academic_Performance (No/Yes)"
-  )
+knitr::kable(
+  means_long,
+  caption = "Średnie (SD) w grupach Affects_Academic_Performance (No/Yes)",
+  align = "l"
+)
 ```
 
 Ten chunk wylicza tabelę porównawczą dla grup **No** i **Yes**:
@@ -993,13 +1207,13 @@ Ten chunk jest więc podsumowaniem w formie modelu: pokazuje, które czynniki s�
 
 Na podstawie statystyk opisowych, korelacji, wykresów oraz testów porównujących grupy (Yes/No) można sformułować następujące wnioski:
 
-1. **Czas korzystania z social mediów jest dodatnio powiązany z poziomem uzależnienia.** W danych wraz ze wzrostem `Avg_Daily_Usage_Hours` rośnie `Addicted_Score` (korelacja dodatnia; trend rosnący na wykresie) (rho Spearmana = `r round(rho_usage_add, 3)`, p = `r signif(p_usage_add, 3)`).
+1. **Czas korzystania z social mediów jest dodatnio powiązany z poziomem uzależnienia.** W danych wraz ze wzrostem `Avg_Daily_Usage_Hours` rośnie `Addicted_Score` (korelacja dodatnia; wyższe wartości w grupach większego czasu w SM) (rho Spearmana = `r round(rho_usage_add, 3)`, p = `r signif(p_usage_add, 3)`).
 2. **Większe korzystanie z SM wiąże się z krótszym snem.** Zależność `Avg_Daily_Usage_Hours` vs `Sleep_Hours_Per_Night` ma kierunek ujemny. (rho Spearmana = `r round(rho_usage_sleep, 3)`, p = `r signif(p_usage_sleep, 3)`).
 
 3. **Dobrostan psychiczny (mierzone `Mental_Health_Score`) współwystępuje z zachowaniami w SM.** Wyższy czas korzystania jest powiązany z niższym `Mental_Health_Score`, a `Mental_Health_Score` jest ujemnie powiązany z `Addicted_Score`.
 W danych: czas vs zdrowie psychiczne ma rho = `r round(rho_usage_mh, 3)` (p = `r signif(p_usage_mh, 3)`), a zdrowie psychiczne vs uzależnienie ma rho = `r round(rho_mh_add, 3)` (p = `r signif(p_mh_add, 3)`).
 
-4. **Konflikty przez social media rosną wraz z czasem korzystania.** `Avg_Daily_Usage_Hours` jest dodatnio powiązany z `Conflicts_Over_Social_Media`. (rho Spearmana = `r round(rho_usage_conf, 3)`, p = `r signif(p_usage_conf, 3)`).
+4. **Konflikty przez social media są wyższe przy większym czasie korzystania.** `Avg_Daily_Usage_Hours` jest dodatnio powiązany z `Conflicts_Over_Social_Media`. (rho Spearmana = `r round(rho_usage_conf, 3)`, p = `r signif(p_usage_conf, 3)`).
 
 5. **Grupy Yes vs No różnią się istotnie statystycznie w kluczowych zmiennych (testy t-Studenta).** Osoby z grupy „Yes” (deklaracja wpływu na naukę) mają przeciętnie:
    - wyższy czas korzystania z social mediów,
@@ -1061,9 +1275,4 @@ Z powyższych powodów raport należy traktować jako analizę eksploracyjną za
 
 Podsumowując, wskazane usprawnienia pozwoliłyby ograniczyć błąd pomiaru i ryzyko stronniczości (bias), a także zwiększyć możliwość uogólniania wyników na szerszą populację studentów. W szczególności dane zbierane w czasie oraz obiektywny pomiar czasu korzystania mogłyby pomóc lepiej rozdzielić, co jest potencjalną przyczyną, a co skutkiem. W efekcie kolejne badanie dawałoby mocniejsze wnioski i bardziej wiarygodne rekomendacje praktyczne.
 
-## 10. Info o sesji {#sesja}
-
-```{r sessioninfo}
-sessionInfo()
-```
 
