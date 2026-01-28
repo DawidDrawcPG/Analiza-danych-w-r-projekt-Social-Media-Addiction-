@@ -373,7 +373,7 @@ mtext("Korelacje rang Spearmana (puste pola: p > 0.05)", side = 3, line = 0.2, c
 Macierz pokazuje ogólny obraz zależności pomiędzy zmiennymi. Wartości dodatnie oznaczają, że wraz ze wzrostem jednej zmiennej rośnie druga, a wartości ujemne oznaczają zależność odwrotną. Zastosowane “puste pola” (p > 0.05) pomagają odróżnić zależności statystycznie istotne od nieistotnych. Dodatkowo uporządkowanie metodą klastrowania (hclust) grupuje zmienne o podobnym profilu zależności, co ułatwia interpretację.
 
 
-## 4.1 Korelacje: czas w SM vs reszta
+### 4.1 Korelacje: czas w SM vs reszta {#korelacje_czas}
 
 
 ```{r korelacje_czas_tabela, echo=FALSE, message=FALSE, warning=FALSE}
@@ -426,7 +426,7 @@ W praktyce oznacza to, że większy czas w SM współwystępuje z wyższym uzale
 
 
 
-## 4.2 Wizualizacja korelacji: lollipop (czas w SM vs kluczowe wskaźniki)
+### 4.2 Wizualizacja korelacji (lollipop) {#korelacje_lollipop}
 
 Aby uniknąć problemu “nakładania punktów” (typowego dla wykresów rozrzutu przy danych dyskretnych) przedstawiono korelacje w formie wykresu lollipop, który jest bardziej czytelny i porównywalny. 
 
@@ -455,7 +455,7 @@ ggplot(plot_df, aes(x = Zmienna, y = rho)) +
 ```
 Wykres potwierdza wnioski z tabeli: najsilniejsze dodatnie zależności dotyczą uzależnienia i konfliktów, natomiast najsilniejsze ujemne zależności dotyczą snu i zdrowia psychicznego. Taka forma prezentacji ułatwia szybkie porównanie siły relacji bez błędnych wrażeń wizualnych, które często pojawiają się przy wykresach rozrzutu dla danych dyskretnych.
 
-## 4.3 TOP 10 najsilniejszych korelacji
+### 4.3 TOP 10 korelacji {#korelacje_top10}
 
 ```{r korelacje_czas_lollipop, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=4.8}
 idx <- which(lower.tri(cor_mat), arr.ind = TRUE)
