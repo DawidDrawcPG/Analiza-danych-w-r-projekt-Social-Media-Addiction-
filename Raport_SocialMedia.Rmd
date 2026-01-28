@@ -210,14 +210,15 @@ W kolejnych częściach raportu przedstawiono: (1) podstawowe przygotowanie dany
 
 ### 1.1 Podgląd danych {#podglad}
 
-```{r podglad, results='asis'}
-cat("Liczba wierszy:", nrow(d), "
-")
-cat("Liczba kolumn:", ncol(d), "
+```{r podglad, results='asis', echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tibble)
+library(knitr)
 
-")
+cat("Liczba wierszy:", nrow(d), "<br>")
+cat("Liczba kolumn:", ncol(d), "<br><br>")
 
-# Zamiast surowego str() robimy krótką tabelę metadanych
+# Metadane
 meta_tbl <- tibble(
   zmienna = names(d),
   typ = sapply(d, function(x) class(x)[1]),
@@ -227,14 +228,38 @@ meta_tbl <- tibble(
 
 knitr::kable(
   meta_tbl,
+  format  = if (knitr::is_html_output()) "html" else "pipe",
   caption = "Szybki opis zmiennych: typ danych, liczba braków i liczba unikalnych wartości",
-  align = "l"
+  align   = "l"
 )
 
-knitr::kable(
-  head(d, 8),
-  caption = "Podgląd pierwszych 8 wierszy danych"
-)
+cat("<br>")
+
+# Podgląd pierwszych 8 wierszy (jedna tabela + suwak)
+d_head <- head(d, 8)
+
+if (knitr::is_html_output()) {
+  cat("<style>
+       .scroll-x {overflow-x:auto; width:100%; border:1px solid #ddd; padding:8px; border-radius:8px;}
+       .scroll-x table {width: max-content;}
+       </style>")
+
+  cat("<div class='scroll-x'>")
+  cat(as.character(knitr::kable(
+    d_head,
+    format  = "html",
+    caption = "Podgląd pierwszych 8 wierszy danych"
+  )))
+  cat("</div>")
+
+} else {
+  knitr::kable(
+    d_head,
+    caption = "Podgląd pierwszych 8 wierszy danych"
+  )
+}
+
+
 ```
 
 Ten chunk to szybki **check**, czy dane wczytały się poprawnie:
