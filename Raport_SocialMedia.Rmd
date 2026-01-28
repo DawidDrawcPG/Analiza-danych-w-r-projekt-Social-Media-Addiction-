@@ -369,14 +369,11 @@ corrplot(
 )
 
 mtext("Korelacje rang Spearmana (puste pola: p > 0.05)", side = 3, line = 0.2, cex = 0.9)
-```
 Macierz pokazuje ogólny obraz zależności pomiędzy zmiennymi. Wartości dodatnie oznaczają, że wraz ze wzrostem jednej zmiennej rośnie druga, a wartości ujemne oznaczają zależność odwrotną. Zastosowane “puste pola” (p > 0.05) pomagają odróżnić zależności statystycznie istotne od nieistotnych. Dodatkowo uporządkowanie metodą klastrowania (hclust) grupuje zmienne o podobnym profilu zależności, co ułatwia interpretację.
 
-
-### 4.1 Korelacje: czas w SM vs reszta {#korelacje_czas}
-
-
-```{r korelacje_czas_tabela, echo=FALSE, message=FALSE, warning=FALSE}
+4.1 Korelacje: czas w SM vs reszta {#korelacje_czas}
+{r
+Skopiuj kod
 library(dplyr)
 
 targets <- c("Addicted_Score", "Mental_Health_Score", "Conflicts_Over_Social_Media", "Sleep_Hours_Per_Night", "Age")
@@ -408,7 +405,6 @@ knitr::kable(
   tab, digits = 3,
   caption = "Korelacje Spearmana: czas korzystania z SM (h/d) vs pozostałe zmienne (korekta Holm)"
 )
-```
 Interpretacja tabeli (z wartościami 1:1).
 Najsilniejsze zależności dotyczą obszaru uzależnienia, konfliktów, snu oraz zdrowia psychicznego. Dla czasu w SM otrzymano m.in.:
 
@@ -424,14 +420,11 @@ wiek: rho = r sprintf('%.2f', tab %>% filter(Zmienna=='Wiek') %>% pull(rho)), p_
 
 W praktyce oznacza to, że większy czas w SM współwystępuje z wyższym uzależnieniem i większą liczbą konfliktów, natomiast jest powiązany z krótszym snem oraz niższą oceną zdrowia psychicznego. Zależność wieku z czasem w SM jest słaba.
 
+4.2 Wizualizacja korelacji (lollipop) {#korelacje_lollipop}
+Aby uniknąć problemu “nakładania punktów” (typowego dla wykresów rozrzutu przy danych dyskretnych) przedstawiono korelacje w formie wykresu lollipop, który jest bardziej czytelny i porównywalny.
 
-
-### 4.2 Wizualizacja korelacji (lollipop) {#korelacje_lollipop}
-
-Aby uniknąć problemu “nakładania punktów” (typowego dla wykresów rozrzutu przy danych dyskretnych) przedstawiono korelacje w formie wykresu lollipop, który jest bardziej czytelny i porównywalny. 
-
-
-```{r korelacje_czas_wykres, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=4.5}
+{r
+Skopiuj kod
 library(dplyr)
 library(ggplot2)
 
@@ -452,12 +445,11 @@ ggplot(plot_df, aes(x = Zmienna, y = rho)) +
     y = "rho (Spearman)"
   ) +
   theme_minimal()
-```
 Wykres potwierdza wnioski z tabeli: najsilniejsze dodatnie zależności dotyczą uzależnienia i konfliktów, natomiast najsilniejsze ujemne zależności dotyczą snu i zdrowia psychicznego. Taka forma prezentacji ułatwia szybkie porównanie siły relacji bez błędnych wrażeń wizualnych, które często pojawiają się przy wykresach rozrzutu dla danych dyskretnych.
 
-### 4.3 TOP 10 korelacji {#korelacje_top10}
-
-```{r korelacje_czas_lollipop, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=4.8}
+4.3 TOP 10 korelacji {#korelacje_top10}
+{r
+Skopiuj kod
 idx <- which(lower.tri(cor_mat), arr.ind = TRUE)
 
 top_cor <- data.frame(
@@ -473,13 +465,9 @@ top_cor <- data.frame(
   arrange(desc(abs(rho)))
 
 knitr::kable(head(top_cor, 10), caption = "TOP 10 najsilniejszych korelacji (Spearman)")
-
-```
 Wyniki analizy korelacji wskazują na istotne statystycznie oraz jednocześnie silne zależności pomiędzy czasem korzystania z mediów społecznościowych a kluczowymi wskaźnikami funkcjonowania badanych osób, w szczególności snem, oceną zdrowia psychicznego, liczbą konfliktów związanych z SM oraz poziomem uzależnienia. Oznacza to, że czas spędzany w SM nie jest zmienną neutralną opisowo, lecz współwystępuje z szeregiem konsekwencji lub cech, które mogą być interpretowane jako potencjalne obszary ryzyka (np. krótszy sen, gorszy dobrostan psychiczny, większa liczba konfliktów) oraz nasilonego problematycznego używania (wysoki wynik uzależnienia). Jednocześnie należy zaznaczyć, że sama korelacja nie umożliwia wnioskowania o kierunku zależności ani o mechanizmie przyczynowym. W praktyce równie możliwe są scenariusze, w których dłuższy czas w SM wpływa na sen i dobrostan, jak i takie, w których gorszy dobrostan lub problemy ze snem sprzyjają większemu korzystaniu z SM, a także scenariusze z udziałem zmiennych pośredniczących i zakłócających.
 
 Z punktu widzenia dalszej części raportu uzyskane zależności stanowią uzasadnienie dla analiz pogłębionych, takich jak porównania grup (np. osoby o niskim i wysokim czasie korzystania), a także modelowanie wielowymiarowe, w którym można jednocześnie uwzględnić kilka predyktorów i ocenić ich niezależny wkład. Warto jednak zachować ostrożność metodologiczną, ponieważ bardzo silne korelacje pomiędzy częścią wskaźników mogą prowadzić do współliniowości w modelach regresyjnych i obniżać stabilność estymacji parametrów. Dlatego w kolejnych etapach analizy zasadne jest sprawdzenie tego zjawiska (np. poprzez diagnostykę VIF) oraz ewentualne ograniczenie liczby silnie skorelowanych zmiennych lub wybór wskaźników reprezentatywnych. Podsumowując, analiza korelacji dostarcza spójnego obrazu współzależności badanych cech i stanowi solidny punkt wyjścia do dalszych wniosków, przy zachowaniu poprawnej interpretacji statystycznej.
-
-
 
 ## 5. Wykresy {#wykresy}
 
