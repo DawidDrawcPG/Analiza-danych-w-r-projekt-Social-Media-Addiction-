@@ -322,82 +322,164 @@ W tym chuncku liczymy **statystyki opisowe** dla wszystkich zmiennych liczbowych
 
 Wynik `stats_tbl` to jedna tabela, która pozwala szybko porównać skale i rozrzut zmiennych (np. ile średnio śpią, ile godzin spędzają w SM i jaki jest poziom uzależnienia).
 
+
 ## 4. Korelacje {#korelacje}
 
-```{r korelacje, results='asis'}
+W tym punkcie oceniam zależności pomiędzy wybranymi zmiennymi liczbowymi. Ponieważ część zmiennych ma charakter dyskretny/porządkowy (np. skale punktowe 0–10), zastosowano korelację rang Spearmana (rho), która jest odporna na nieliniowość i lepiej pasuje do takich danych niż korelacja Pearsona.
+
+```{r korelacje_macierz, echo=FALSE, message=FALSE, warning=FALSE, fig.width=9, fig.height=6}
+library(dplyr)
+library(corrplot)
+library(Hmisc)
+
 num_vars <- d %>%
-  select(where(is.numeric)) %>%
-  select(-any_of("Student_ID"))
+  select(Age, Avg_Daily_Usage_Hours, Sleep_Hours_Per_Night,
+         Mental_Health_Score, Conflicts_Over_Social_Media, Addicted_Score)
 
-# Spearman: lepszy dla skal punktowych (0-10) i danych z remisami
-cor_mat <- cor(num_vars, use = "pairwise.complete.obs", method = "spearman")
+rc <- Hmisc::rcorr(as.matrix(num_vars), type = "spearman")
+cor_mat <- rc$r
+p_mat   <- rc$P
 
-# macierz p-value dla korelacji (żeby nie brać na wiarę samych kolorów)
-cor_pmat <- function(df) {
-  m <- as.matrix(df)
-  n <- ncol(m)
-  p <- matrix(NA_real_, n, n)
-  diag(p) <- 0
-  for (i in 1:(n - 1)) {
-    for (j in (i + 1):n) {
-      ct <- suppressWarnings(cor.test(m[, i], m[, j], method = "spearman", exact = FALSE))
-      p[i, j] <- ct$p.value
-      p[j, i] <- ct$p.value
-    }
-  }
-  colnames(p) <- colnames(m)
-  rownames(p) <- colnames(m)
-  p
-}
-p_mat <- cor_pmat(num_vars)
+short_names <- c(
+  Age = "Wiek",
+  Avg_Daily_Usage_Hours = "Czas (h/d)",
+  Sleep_Hours_Per_Night = "Sen (h)",
+  Mental_Health_Score = "Zdrowie psych.",
+  Conflicts_Over_Social_Media = "Konflikty",
+  Addicted_Score = "Uzależnienie"
+)
+colnames(cor_mat) <- rownames(cor_mat) <- unname(short_names[colnames(cor_mat)])
+colnames(p_mat)   <- rownames(p_mat)   <- colnames(cor_mat)
 
 corrplot(
   cor_mat,
   method = "color",
-  type = "upper",
+  type = "lower",
   order = "hclust",
+  diag = FALSE,
   addCoef.col = "black",
-  tl.cex = 0.8,
-  number.cex = 0.7,
+  number.cex = 0.85,
+  tl.col = "black",
+  tl.cex = 0.9,
+  tl.srt = 45,
   p.mat = p_mat,
   sig.level = 0.05,
-  insig = "blank"
+  insig = "blank",
+  mar = c(0,0,1,0)
 )
 
-# krótka tabelka: czas w SM vs kluczowe wskaźniki
-if ("Avg_Daily_Usage_Hours" %in% names(d)) {
-  key_vars <- c("Addicted_Score","Sleep_Hours_Per_Night","Mental_Health_Score","Conflicts_Over_Social_Media")
-  key_vars <- intersect(key_vars, names(d))
-
-  corr_key <- purrr::map_dfr(key_vars, function(v) {
-    ct <- suppressWarnings(cor.test(d$Avg_Daily_Usage_Hours, d[[v]], method = "spearman", exact = FALSE))
-    tibble(
-      y = v,
-      rho = as.numeric(ct$estimate),
-      p = ct$p.value
-    )
-  }) %>%
-    mutate(
-      rho = round(rho, 3),
-      p = signif(p, 3)
-    )
-
-  knitr::kable(
-    corr_key,
-    caption = "Wybrane korelacje Spearmana: czas w SM vs kluczowe wskaźniki",
-    align = "l"
-  )
-}
+mtext("Korelacje rang Spearmana (puste pola: p > 0.05)", side = 3, line = 0.2, cex = 0.9)
 ```
+Macierz pokazuje ogólny obraz zależności pomiędzy zmiennymi. Wartości dodatnie oznaczają, że wraz ze wzrostem jednej zmiennej rośnie druga, a wartości ujemne oznaczają zależność odwrotną. Zastosowane “puste pola” (p > 0.05) pomagają odróżnić zależności statystycznie istotne od nieistotnych. Dodatkowo uporządkowanie metodą klastrowania (hclust) grupuje zmienne o podobnym profilu zależności, co ułatwia interpretację.
 
-W tym fragmencie obliczamy i pokazujemy **korelacje** między zmiennymi liczbowymi.
 
-- Najpierw wybieramy z danych `d` tylko kolumny liczbowe (`select(where(is.numeric))`). To ważne, bo korelacja ma sens dla liczb, a nie np. dla płci czy kraju.
-- Potem usuwamy `Student_ID`, jeśli istnieje. ID to tylko numer porządkowy, a jego korelacje byłyby bez sensu i mogłyby mieszać w obrazie.
-- `cor(...)` liczy macierz korelacji. Ustawienie `use = "pairwise.complete.obs"` oznacza, że jeśli gdzieś byłyby braki danych, korelacja dla danej pary liczy się na tych obserwacjach, gdzie obie zmienne są dostępne. To jest „bezpieczne” ustawienie: korelacja liczy się na obserwacjach, gdzie obie zmienne nie są NA.
-- `corrplot(...)` rysuje wynik jako mapę. `type = "upper"` pokazuje tylko górny trójkąt (żeby nie dublować informacji), a `order = "hclust"` grupuje podobne zmienne obok siebie (klastrowanie), dzięki czemu łatwiej zobaczyć „paczki” zależności.
+## 4.1 Korelacje: czas w SM vs reszta
 
-Interpretacja w skrócie: wartości blisko **+1** oznaczają silną zależność dodatnią (rośnie X, rośnie Y), blisko **-1** silną ujemną (rośnie X, spada Y), a okolice **0** brak liniowej zależności.
+
+```{r korelacje_czas_tabela, echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+
+targets <- c("Addicted_Score", "Mental_Health_Score", "Conflicts_Over_Social_Media", "Sleep_Hours_Per_Night", "Age")
+
+tab <- lapply(targets, function(v){
+  ct <- suppressWarnings(cor.test(d$Avg_Daily_Usage_Hours, d[[v]], method = "spearman", exact = FALSE))
+  data.frame(
+    Zmienna = v,
+    rho = unname(ct$estimate),
+    p = ct$p.value
+  )
+}) |> bind_rows() |>
+  mutate(
+    p_adj = p.adjust(p, method = "holm"),
+    rho = round(rho, 2)
+  ) |>
+  mutate(
+    Zmienna = recode(Zmienna,
+      Addicted_Score = "Uzależnienie",
+      Mental_Health_Score = "Zdrowie psychiczne",
+      Conflicts_Over_Social_Media = "Konflikty w SM",
+      Sleep_Hours_Per_Night = "Sen (h/noc)",
+      Age = "Wiek"
+    )
+  ) |>
+  arrange(desc(abs(rho)))
+
+knitr::kable(
+  tab, digits = 3,
+  caption = "Korelacje Spearmana: czas korzystania z SM (h/d) vs pozostałe zmienne (korekta Holm)"
+)
+```
+Interpretacja tabeli (z wartościami 1:1).
+Najsilniejsze zależności dotyczą obszaru uzależnienia, konfliktów, snu oraz zdrowia psychicznego. Dla czasu w SM otrzymano m.in.:
+
+uzależnienie: rho = r sprintf('%.2f', tab %>% filter(Zmienna=='Uzależnienie') %>% pull(rho)), p_adj = r format.pval(tab %>% filter(Zmienna=='Uzależnienie') %>% pull(p_adj), digits=3, eps=1e-3)
+
+konflikty w SM: rho = r sprintf('%.2f', tab %>% filter(Zmienna=='Konflikty w SM') %>% pull(rho)), p_adj = r format.pval(tab %>% filter(Zmienna=='Konflikty w SM') %>% pull(p_adj), digits=3, eps=1e-3)
+
+sen: rho = r sprintf('%.2f', tab %>% filter(Zmienna=='Sen (h/noc)') %>% pull(rho)), p_adj = r format.pval(tab %>% filter(Zmienna=='Sen (h/noc)') %>% pull(p_adj), digits=3, eps=1e-3)
+
+zdrowie psychiczne: rho = r sprintf('%.2f', tab %>% filter(Zmienna=='Zdrowie psychiczne') %>% pull(rho)), p_adj = r format.pval(tab %>% filter(Zmienna=='Zdrowie psychiczne') %>% pull(p_adj), digits=3, eps=1e-3)
+
+wiek: rho = r sprintf('%.2f', tab %>% filter(Zmienna=='Wiek') %>% pull(rho)), p_adj = r format.pval(tab %>% filter(Zmienna=='Wiek') %>% pull(p_adj), digits=3, eps=1e-3)
+
+W praktyce oznacza to, że większy czas w SM współwystępuje z wyższym uzależnieniem i większą liczbą konfliktów, natomiast jest powiązany z krótszym snem oraz niższą oceną zdrowia psychicznego. Zależność wieku z czasem w SM jest słaba.
+
+
+
+## 4.2 Wizualizacja korelacji: lollipop (czas w SM vs kluczowe wskaźniki)
+
+Aby uniknąć problemu “nakładania punktów” (typowego dla wykresów rozrzutu przy danych dyskretnych) przedstawiono korelacje w formie wykresu lollipop, który jest bardziej czytelny i porównywalny. 
+
+
+```{r korelacje_czas_wykres, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=4.5}
+library(dplyr)
+library(ggplot2)
+
+plot_df <- tab %>%
+  arrange(rho) %>%
+  mutate(Zmienna = factor(Zmienna, levels = Zmienna))
+
+ggplot(plot_df, aes(x = Zmienna, y = rho)) +
+  geom_hline(yintercept = 0) +
+  geom_segment(aes(xend = Zmienna, y = 0, yend = rho)) +
+  geom_point(size = 3) +
+  coord_flip() +
+  geom_text(aes(label = sprintf("%.2f", rho)),
+            hjust = ifelse(plot_df$rho >= 0, -0.15, 1.15)) +
+  labs(
+    title = "Korelacje Spearmana: czas w SM (h/d) a wybrane wskaźniki",
+    x = NULL,
+    y = "rho (Spearman)"
+  ) +
+  theme_minimal()
+```
+Wykres potwierdza wnioski z tabeli: najsilniejsze dodatnie zależności dotyczą uzależnienia i konfliktów, natomiast najsilniejsze ujemne zależności dotyczą snu i zdrowia psychicznego. Taka forma prezentacji ułatwia szybkie porównanie siły relacji bez błędnych wrażeń wizualnych, które często pojawiają się przy wykresach rozrzutu dla danych dyskretnych.
+
+## 4.3 TOP 10 najsilniejszych korelacji
+
+```{r korelacje_czas_lollipop, echo=FALSE, message=FALSE, warning=FALSE, fig.width=8, fig.height=4.8}
+idx <- which(lower.tri(cor_mat), arr.ind = TRUE)
+
+top_cor <- data.frame(
+  Zmienna_1 = rownames(cor_mat)[idx[,1]],
+  Zmienna_2 = colnames(cor_mat)[idx[,2]],
+  rho = cor_mat[idx],
+  p = p_mat[idx]
+) %>%
+  mutate(
+    rho = round(rho, 2),
+    p = format.pval(p, digits = 3, eps = 1e-3)
+  ) %>%
+  arrange(desc(abs(rho)))
+
+knitr::kable(head(top_cor, 10), caption = "TOP 10 najsilniejszych korelacji (Spearman)")
+
+```
+Wyniki analizy korelacji wskazują na istotne statystycznie oraz jednocześnie silne zależności pomiędzy czasem korzystania z mediów społecznościowych a kluczowymi wskaźnikami funkcjonowania badanych osób, w szczególności snem, oceną zdrowia psychicznego, liczbą konfliktów związanych z SM oraz poziomem uzależnienia. Oznacza to, że czas spędzany w SM nie jest zmienną neutralną opisowo, lecz współwystępuje z szeregiem konsekwencji lub cech, które mogą być interpretowane jako potencjalne obszary ryzyka (np. krótszy sen, gorszy dobrostan psychiczny, większa liczba konfliktów) oraz nasilonego problematycznego używania (wysoki wynik uzależnienia). Jednocześnie należy zaznaczyć, że sama korelacja nie umożliwia wnioskowania o kierunku zależności ani o mechanizmie przyczynowym. W praktyce równie możliwe są scenariusze, w których dłuższy czas w SM wpływa na sen i dobrostan, jak i takie, w których gorszy dobrostan lub problemy ze snem sprzyjają większemu korzystaniu z SM, a także scenariusze z udziałem zmiennych pośredniczących i zakłócających.
+
+Z punktu widzenia dalszej części raportu uzyskane zależności stanowią uzasadnienie dla analiz pogłębionych, takich jak porównania grup (np. osoby o niskim i wysokim czasie korzystania), a także modelowanie wielowymiarowe, w którym można jednocześnie uwzględnić kilka predyktorów i ocenić ich niezależny wkład. Warto jednak zachować ostrożność metodologiczną, ponieważ bardzo silne korelacje pomiędzy częścią wskaźników mogą prowadzić do współliniowości w modelach regresyjnych i obniżać stabilność estymacji parametrów. Dlatego w kolejnych etapach analizy zasadne jest sprawdzenie tego zjawiska (np. poprzez diagnostykę VIF) oraz ewentualne ograniczenie liczby silnie skorelowanych zmiennych lub wybór wskaźników reprezentatywnych. Podsumowując, analiza korelacji dostarcza spójnego obrazu współzależności badanych cech i stanowi solidny punkt wyjścia do dalszych wniosków, przy zachowaniu poprawnej interpretacji statystycznej.
+
+
 
 ## 5. Wykresy {#wykresy}
 
