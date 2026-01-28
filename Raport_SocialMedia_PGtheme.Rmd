@@ -1,0 +1,1069 @@
+---
+title: "Raport: Uzależnienie od social mediów wśród studentów"
+author: "Dawid Drawc"
+output:
+  html_document:
+    df_print: paged
+    theme: default
+    highlight: tango
+    toc: false
+    number_sections: false
+    code_folding: show
+    css: "pg_navy_style.css"
+    includes:
+      before_body: "nav.html"
+---
+
+## Cel i pytania badawcze
+
+Celem raportu jest sprawdzenie, jak **średni dzienny czas korzystania z social mediów** (`Avg_Daily_Usage_Hours`) wiąże się z:
+
+- poziomem uzależnienia (`Addicted_Score`),
+- snem (`Sleep_Hours_Per_Night`),
+- zdrowiem psychicznym (`Mental_Health_Score`),
+- konfliktami przez social media (`Conflicts_Over_Social_Media`),
+- deklaracją wpływu na wyniki w nauce (`Affects_Academic_Performance`, Yes/No).
+
+Pytania badawcze:
+
+1. Czy osoby z wyższym czasem korzystania mają wyższy poziom uzależnienia?
+2. Czy wyższy czas korzystania wiąże się z krótszym snem?
+3. Czy wyższy czas korzystania wiąże się z gorszym zdrowiem psychicznym?
+4. Czy wyższy czas korzystania wiąże się z większą liczbą konfliktów?
+5. Czy osoby, które mówią „Yes” (wpływa na naukę), różnią się od „No” (czas, sen, uzależnienie itp.)?
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 7,
+  fig.height = 4,
+  fig.align = "center"
+)
+
+# Pakiety
+pkgs <- c("tidyverse", "broom", "corrplot", "scales", "forcats", "car", "pROC")
+to_install <- pkgs[!sapply(pkgs, requireNamespace, quietly = TRUE)]
+if (length(to_install) > 0) install.packages(to_install)
+
+library(tidyverse)
+library(broom)
+library(corrplot)
+library(scales)
+library(forcats)
+library(car)
+library(pROC)
+
+# Wczytanie danych (plik ma leżeć w tym samym folderze co .Rmd)
+data_file_name <- "Students Social Media Addiction.csv"
+
+get_base_dir <- function() {
+  if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
+    p <- tryCatch(rstudioapi::getActiveDocumentContext()$path, error = function(e) "")
+    if (nzchar(p)) return(dirname(p))
+  }
+  if (requireNamespace("knitr", quietly = TRUE)) {
+    p <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) "")
+    if (nzchar(p)) return(dirname(p))
+  }
+  getwd()
+}
+
+base_dir0 <- get_base_dir()
+candidates <- unique(c(base_dir0, getwd(), dirname(base_dir0), dirname(getwd())))
+
+data_file <- NA_character_
+for (dd in candidates) {
+  if (!is.na(dd) && nzchar(dd)) {
+    fp <- file.path(dd, data_file_name)
+    if (file.exists(fp)) { data_file <- fp; break }
+  }
+}
+if (is.na(data_file)) stop("Nie widzę pliku CSV: ", data_file_name)
+
+d <- readr::read_csv(data_file, show_col_types = FALSE)
+
+
+# --- Liczby do tekstu (inline) ---
+n_obs   <- nrow(d)
+n_vars  <- ncol(d)
+na_total <- sum(is.na(d))
+
+safe_min <- function(x) suppressWarnings(min(x, na.rm = TRUE))
+safe_max <- function(x) suppressWarnings(max(x, na.rm = TRUE))
+safe_mean <- function(x) suppressWarnings(mean(x, na.rm = TRUE))
+
+age_min  <- if ("Age" %in% names(d)) safe_min(d$Age) else NA_real_
+age_max  <- if ("Age" %in% names(d)) safe_max(d$Age) else NA_real_
+age_mean <- if ("Age" %in% names(d)) safe_mean(d$Age) else NA_real_
+
+usage_min  <- if ("Avg_Daily_Usage_Hours" %in% names(d)) safe_min(d$Avg_Daily_Usage_Hours) else NA_real_
+usage_max  <- if ("Avg_Daily_Usage_Hours" %in% names(d)) safe_max(d$Avg_Daily_Usage_Hours) else NA_real_
+usage_mean <- if ("Avg_Daily_Usage_Hours" %in% names(d)) safe_mean(d$Avg_Daily_Usage_Hours) else NA_real_
+
+sleep_min  <- if ("Sleep_Hours_Per_Night" %in% names(d)) safe_min(d$Sleep_Hours_Per_Night) else NA_real_
+sleep_max  <- if ("Sleep_Hours_Per_Night" %in% names(d)) safe_max(d$Sleep_Hours_Per_Night) else NA_real_
+sleep_mean <- if ("Sleep_Hours_Per_Night" %in% names(d)) safe_mean(d$Sleep_Hours_Per_Night) else NA_real_
+
+add_min  <- if ("Addicted_Score" %in% names(d)) safe_min(d$Addicted_Score) else NA_real_
+add_max  <- if ("Addicted_Score" %in% names(d)) safe_max(d$Addicted_Score) else NA_real_
+add_mean <- if ("Addicted_Score" %in% names(d)) safe_mean(d$Addicted_Score) else NA_real_
+
+pct_yes <- if ("Affects_Academic_Performance" %in% names(d)) {
+  x <- trimws(as.character(d$Affects_Academic_Performance))
+  if (all(is.na(x))) NA_real_ else mean(x == "Yes", na.rm = TRUE) * 100
+} else NA_real_
+pct_no <- if (is.na(pct_yes)) NA_real_ else 100 - pct_yes
+
+safe_spearman <- function(x, y) {
+  if (is.null(x) || is.null(y)) return(list(rho = NA_real_, p = NA_real_))
+  if (all(is.na(x)) || all(is.na(y))) return(list(rho = NA_real_, p = NA_real_))
+  ct <- suppressWarnings(cor.test(x, y, method = "spearman", exact = FALSE))
+  list(rho = as.numeric(ct$estimate), p = as.numeric(ct$p.value))
+}
+
+# Korelacje do wniosków (Spearman)
+tmp1 <- safe_spearman(d$Avg_Daily_Usage_Hours, d$Addicted_Score)
+rho_usage_add <- tmp1$rho; p_usage_add <- tmp1$p
+
+tmp2 <- safe_spearman(d$Avg_Daily_Usage_Hours, d$Sleep_Hours_Per_Night)
+rho_usage_sleep <- tmp2$rho; p_usage_sleep <- tmp2$p
+
+tmp3 <- safe_spearman(d$Avg_Daily_Usage_Hours, d$Mental_Health_Score)
+rho_usage_mh <- tmp3$rho; p_usage_mh <- tmp3$p
+
+tmp4 <- safe_spearman(d$Avg_Daily_Usage_Hours, d$Conflicts_Over_Social_Media)
+rho_usage_conf <- tmp4$rho; p_usage_conf <- tmp4$p
+
+tmp5 <- safe_spearman(d$Mental_Health_Score, d$Addicted_Score)
+rho_mh_add <- tmp5$rho; p_mh_add <- tmp5$p
+
+# Różnice średnich (Yes - No) do wniosków
+diff_usage_yes_minus_no <- NA_real_
+diff_sleep_yes_minus_no <- NA_real_
+diff_add_yes_minus_no   <- NA_real_
+diff_mh_yes_minus_no    <- NA_real_
+diff_conf_yes_minus_no  <- NA_real_
+
+if ("Affects_Academic_Performance" %in% names(d)) {
+  dd <- d %>% mutate(Affects_Academic_Performance = trimws(as.character(Affects_Academic_Performance))) %>%
+    filter(Affects_Academic_Performance %in% c("No", "Yes"))
+
+  if (nrow(dd) > 0) {
+    gm <- dd %>%
+      group_by(Affects_Academic_Performance) %>%
+      summarise(
+        usage = if ("Avg_Daily_Usage_Hours" %in% names(dd)) mean(Avg_Daily_Usage_Hours, na.rm = TRUE) else NA_real_,
+        sleep = if ("Sleep_Hours_Per_Night" %in% names(dd)) mean(Sleep_Hours_Per_Night, na.rm = TRUE) else NA_real_,
+        add   = if ("Addicted_Score" %in% names(dd)) mean(Addicted_Score, na.rm = TRUE) else NA_real_,
+        mh    = if ("Mental_Health_Score" %in% names(dd)) mean(Mental_Health_Score, na.rm = TRUE) else NA_real_,
+        conf  = if ("Conflicts_Over_Social_Media" %in% names(dd)) mean(Conflicts_Over_Social_Media, na.rm = TRUE) else NA_real_,
+        .groups = "drop"
+      )
+
+    if (all(c("No", "Yes") %in% gm$Affects_Academic_Performance)) {
+      diff_usage_yes_minus_no <- gm$usage[gm$Affects_Academic_Performance == "Yes"] - gm$usage[gm$Affects_Academic_Performance == "No"]
+      diff_sleep_yes_minus_no <- gm$sleep[gm$Affects_Academic_Performance == "Yes"] - gm$sleep[gm$Affects_Academic_Performance == "No"]
+      diff_add_yes_minus_no   <- gm$add[gm$Affects_Academic_Performance == "Yes"] - gm$add[gm$Affects_Academic_Performance == "No"]
+      diff_mh_yes_minus_no    <- gm$mh[gm$Affects_Academic_Performance == "Yes"] - gm$mh[gm$Affects_Academic_Performance == "No"]
+      diff_conf_yes_minus_no  <- gm$conf[gm$Affects_Academic_Performance == "Yes"] - gm$conf[gm$Affects_Academic_Performance == "No"]
+    }
+  }
+}
+
+```
+
+## 1. Wstęp i opis danych {#opis}
+
+Analiza została wykonana na zbiorze danych dotyczących korzystania z mediów społecznościowych przez studentów. Temat jest istotny, ponieważ w grupie studentów intensywne korzystanie z social mediów może nakładać się na obowiązki akademickie, rytm dobowy oraz funkcjonowanie psychiczne. W literaturze często wskazuje się m.in. mechanizmy takie jak: rozproszenie uwagi, odkładanie zadań (prokrastynacja), skracanie snu przez używanie telefonu wieczorem oraz stres społeczny związany z porównywaniem się lub konfliktami online.
+
+Zmienne w zbiorze mają w dużej części charakter **samoopisowy** (deklaracje respondentów). Oznacza to, że raport opisuje zależności obserwacyjne w danych, natomiast **nie pozwala** na wnioskowanie o przyczynowości (korelacja ≠ przyczyna). Dodatkowo część konstruktów (np. dobrostan psychiczny czy uzależnienie) jest przedstawiona w formie skróconych wskaźników punktowych, dlatego w analizie skupiamy się na porównaniach i kierunku zależności, a nie na „diagnozie” klinicznej.
+
+Zgodnie z opisem zadania, celem zbioru jest pokazanie, w jaki sposób korzystanie z social mediów może wiązać się z codziennym funkcjonowaniem studentów, w szczególności z obszarami takimi jak: **wyniki w nauce**, **jakość snu** oraz **dobrostan psychiczny**. Dane zawierają odpowiedzi studentów z kilku krajów i są przygotowane w formie „czystego” pliku CSV, gotowego do analizy.
+
+Zbiór obejmuje **`r n_obs` obserwacji** (respondentów) oraz **`r n_vars` zmiennych**. `r if (na_total == 0) 'W pliku nie występują braki danych (NA).' else paste0('W pliku występują braki danych (NA): ', na_total, '.')` To ułatwia analizę porównawczą oraz estymację modeli.
+
+W danych można wyróżnić trzy grupy zmiennych:
+
+1. **Cechy demograficzne i tło**: `Age` (wiek), `Gender` (płeć), `Academic_Level` (poziom edukacji), `Country` (kraj), `Relationship_Status` (status związku).
+2. **Korzystanie z social mediów**: `Avg_Daily_Usage_Hours` (średni dzienny czas korzystania), `Most_Used_Platform` (najczęściej używana platforma) oraz `Affects_Academic_Performance` (deklaracja wpływu na wyniki w nauce: Yes/No).
+3. **Wskaźniki w formie skali punktowej**: `Mental_Health_Score`, `Conflicts_Over_Social_Media` oraz `Addicted_Score`. W interpretacji przyjmujemy standardowe założenie: **wyższa wartość oznacza większe nasilenie** danego zjawiska.
+
+W dalszej części raportu czas korzystania z social mediów (`Avg_Daily_Usage_Hours`) traktujemy jako zmienną kluczową, a pozostałe wskaźniki analizujemy zarówno opisowo (korelacje i wykresy), jak i porównawczo (testy t dla grup Yes/No). Dodatkowo zastosowano modele: liniowy (dla `Addicted_Score`) oraz logistyczny (dla prawdopodobieństwa odpowiedzi „Yes”), aby sprawdzić, czy zależności utrzymują się po uwzględnieniu kilku cech jednocześnie.
+
+Podstawowe charakterystyki liczbowe próby:
+
+- wiek: **`r age_min`–`r age_max` lat**, średnio **`r round(age_mean, 2)`**,
+- średni dzienny czas w SM: **`r round(usage_min, 1)`–`r round(usage_max, 1)` h**, średnio **`r round(usage_mean, 2)` h**,
+- sen: **`r round(sleep_min, 1)`–`r round(sleep_max, 1)` h/noc**, średnio **`r round(sleep_mean, 2)` h**,
+- uzależnienie (`Addicted_Score`): **`r add_min`–`r add_max`**, średnio **`r round(add_mean, 2)`**,
+- deklarowany wpływ na naukę (`Affects_Academic_Performance`): **Yes `r round(pct_yes, 1)`%**, **No `r round(pct_no, 1)`%**.
+
+W kolejnych częściach raportu przedstawiono: (1) podstawowe przygotowanie danych, (2) statystyki opisowe, (3) korelacje i wykresy zależności z czasem korzystania, (4) porównanie grup Yes/No testami t-Studenta, a na końcu modele (liniowy i logistyczny) jako uzupełnienie analizy.
+
+### 1.1 Podgląd danych {#podglad}
+
+```{r podglad}
+cat("Liczba wierszy:", nrow(d), "\n")
+cat("Liczba kolumn:", ncol(d), "\n\n")
+
+# podgląd struktury
+str(d)
+
+# pierwsze wiersze
+head(d)
+```
+
+Ten chunk to szybki **check**, czy dane wczytały się poprawnie:
+
+- `nrow()` i `ncol()` mówią, ile jest obserwacji i zmiennych,
+- `str(d)` pokazuje typy kolumn (czy liczby są liczbami, a kategorie są tekstem/faktorem),
+- `head(d)` daje podgląd pierwszych rekordów i pozwala zauważyć oczywiste problemy (np. dziwne wartości).
+
+To jest ważne, bo jeśli na tym etapie coś jest „nie tak”, to późniejsze wykresy, testy i modele mogą wyjść błędnie.
+
+
+## 2. Czyszczenie danych {#czyszczenie}
+
+```{r czyszczenie}
+# Zmiennym kategorycznym ustawiamy factor
+cat_cols <- c(
+  "Gender", "Academic_Level", "Country", "Most_Used_Platform",
+  "Affects_Academic_Performance", "Relationship_Status"
+)
+cat_cols <- intersect(cat_cols, names(d))
+
+d <- d %>%
+  mutate(across(all_of(cat_cols), as.factor)) %>%
+  mutate(
+    # porządek poziomów Yes/No (żeby w tabelach zawsze było No -> Yes)
+    Affects_Academic_Performance = forcats::fct_relevel(Affects_Academic_Performance, "No", "Yes"),
+    # kraj: zostaw top 10, reszta = Other
+    Country = forcats::fct_lump_n(Country, n = 10, other_level = "Other")
+  )
+
+# szybka kontrola braków
+colSums(is.na(d))
+```
+
+W tym chuncku przygotowujemy dane do analizy (tak, żeby później grupowanie i wykresy działały przewidywalnie).
+
+- `cat_cols <- c(...)` tworzy listę kolumn, które traktujemy jako kategorie (np. `Gender`, `Country`, `Most_Used_Platform`).
+- `intersect(cat_cols, names(d))` zostawia tylko te nazwy, które faktycznie istnieją w `d`. Dzięki temu chunk nie wywali błędu, jeśli jakaś kolumna byłaby np. inaczej nazwana.
+- `mutate(across(all_of(cat_cols), as.factor))` zamienia wskazane kolumny na typ **factor**. To jest ważne, bo:
+  - w tabelach i modelach R rozpoznaje je jako zmienne jakościowe,
+  - w `ggplot` łatwiej robić wykresy dla kategorii,
+  - w modelach (lm/glm) czynniki są automatycznie kodowane na zmienne zero-jedynkowe.
+- `forcats::fct_relevel(..., "No", "Yes")` ustawia kolejność poziomów w zmiennej `Affects_Academic_Performance`. Dzięki temu w tabelach i wynikach porównań „No” jest bazą (najpierw), a „Yes” jest drugie, co ułatwia interpretację.
+- `forcats::fct_lump_n(Country, n = 10, other_level = "Other")` zostawia 10 najczęstszych krajów, a resztę łączy do kategorii `Other`. To zapobiega sytuacji, gdzie jest kilkadziesiąt rzadkich krajów i wykresy/tabele stają się nieczytelne.
+- `colSums(is.na(d))` to kontrola jakości: pokazuje liczbę braków (NA) w każdej kolumnie. Braki mogą występować albo nie, zależnie od pliku, więc warto to zostawić.
+
+## 3. Statystyki opisowe {#statystyki}
+
+```{r statystyki}
+# Zmienne liczbowe (bez ID)
+num_tbl <- d %>%
+  select(where(is.numeric)) %>%
+  select(-any_of("Student_ID"))
+
+stats_tbl <- num_tbl %>%
+  summarise(across(
+    everything(),
+    list(
+      n = ~sum(!is.na(.x)),
+      srednia = ~mean(.x, na.rm = TRUE),
+      mediana = ~median(.x, na.rm = TRUE),
+      sd = ~sd(.x, na.rm = TRUE),
+      min = ~min(.x, na.rm = TRUE),
+      max = ~max(.x, na.rm = TRUE)
+    ),
+    .names = "{.col}_{.fn}"
+  ))
+
+stats_tbl
+```
+
+W tym chuncku liczymy **statystyki opisowe** dla wszystkich zmiennych liczbowych.
+
+- Najpierw tworzymy `num_tbl`, czyli bierzemy z danych `d` tylko kolumny liczbowe (`select(where(is.numeric))`).
+- Potem usuwamy `Student_ID`, jeśli występuje. To ważne, bo identyfikator jest tylko numerem porządkowym i nie powinien być analizowany jak normalna zmienna.
+- Następnie `summarise(across(...))` przechodzi po każdej kolumnie i liczy zestaw podstawowych miar:
+  - `n` liczba obserwacji (niepustych),
+  - `srednia` średnia arytmetyczna,
+  - `mediana` mediana,
+  - `sd` odchylenie standardowe,
+  - `min` wartość minimalna,
+  - `max` wartość maksymalna.
+- Ustawienie `na.rm = TRUE` mówi R, żeby ignorować braki danych (NA), więc obliczenia zadziałają poprawnie nawet jeśli braki się pojawią.
+- `.names = "{.col}_{.fn}"` nadaje czytelne nazwy kolumnom w tabeli wynikowej, np. `Age_srednia`, `Age_sd` itd.
+
+Wynik `stats_tbl` to jedna tabela, która pozwala szybko porównać skale i rozrzut zmiennych (np. ile średnio śpią, ile godzin spędzają w SM i jaki jest poziom uzależnienia).
+
+## 4. Korelacje {#korelacje}
+
+```{r korelacje}
+num_vars <- d %>%
+  select(where(is.numeric)) %>%
+  select(-any_of("Student_ID"))
+
+cor_mat <- cor(num_vars, use = "pairwise.complete.obs")
+
+corrplot(cor_mat, method = "square", type = "upper", order = "hclust")
+```
+
+W tym fragmencie obliczamy i pokazujemy **korelacje** między zmiennymi liczbowymi.
+
+- Najpierw wybieramy z danych `d` tylko kolumny liczbowe (`select(where(is.numeric))`). To ważne, bo korelacja ma sens dla liczb, a nie np. dla płci czy kraju.
+- Potem usuwamy `Student_ID`, jeśli istnieje. ID to tylko numer porządkowy, a jego korelacje byłyby bez sensu i mogłyby mieszać w obrazie.
+- `cor(...)` liczy macierz korelacji. Ustawienie `use = "pairwise.complete.obs"` oznacza, że jeśli gdzieś byłyby braki danych, korelacja dla danej pary liczy się na tych obserwacjach, gdzie obie zmienne są dostępne. To jest „bezpieczne” ustawienie: korelacja liczy się na obserwacjach, gdzie obie zmienne nie są NA.
+- `corrplot(...)` rysuje wynik jako mapę. `type = "upper"` pokazuje tylko górny trójkąt (żeby nie dublować informacji), a `order = "hclust"` grupuje podobne zmienne obok siebie (klastrowanie), dzięki czemu łatwiej zobaczyć „paczki” zależności.
+
+Interpretacja w skrócie: wartości blisko **+1** oznaczają silną zależność dodatnią (rośnie X, rośnie Y), blisko **-1** silną ujemną (rośnie X, spada Y), a okolice **0** brak liniowej zależności.
+
+## 5. Wykresy {#wykresy}
+
+W tej sekcji przedstawiono **analizę wizualną** zależności pomiędzy czasem korzystania z social mediów
+(`Avg_Daily_Usage_Hours`) a wybranymi wynikami dotyczącymi funkcjonowania studentów
+(uzależnienie, sen, dobrostan psychiczny, konflikty). Celem jest wstępne rozpoznanie **kierunku i siły
+związku** oraz sprawdzenie, czy w danych widać trendy, które potem testujemy w części statystycznej.
+
+Wykorzystano wykresy rozrzutu (pojedyncze obserwacje) wraz z dopasowaniem liniowym (OLS) i pasmem
+niepewności (przedział ufności). Tego typu wykresy są użyteczne do oceny, czy relacja jest w przybliżeniu
+liniowa, oraz czy występują obserwacje odstające lub duży rozrzut.
+
+Ważne: są to zależności **obserwacyjne**. Nawet jeśli trend jest wyraźny, nie oznacza to jeszcze związku
+przyczynowego (możliwe zmienne trzecie, np. styl życia, stres, obowiązki).
+
+### 5.1 Czas w SM vs uzależnienie {#wykres_addicted}
+
+```{r wykres_addicted}
+# Czas w SM vs uzależnienie
+
+ggplot(d, aes(x = Avg_Daily_Usage_Hours, y = Addicted_Score)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(title = "Czas w social mediach a poziom uzależnienia",
+       x = "Godziny dziennie",
+       y = "Addicted_Score")
+```
+
+Ten wykres sprawdza, czy osoby spędzające więcej czasu w social mediach mają wyższy wynik `Addicted_Score`.
+
+- Jeśli linia trendu idzie w górę, to sugeruje dodatnią zależność: więcej godzin w SM wiąże się z wyższym poziomem uzależnienia.
+- Szeroki pas niepewności lub duży rozrzut punktów oznacza, że u różnych osób przy tym samym czasie w SM wynik uzależnienia może być bardzo różny.
+
+### 5.2 Czas w SM vs sen {#wykres_sen}
+
+```{r wykres_sen}
+# Czas w SM vs sen
+
+ggplot(d, aes(x = Avg_Daily_Usage_Hours, y = Sleep_Hours_Per_Night)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(title = "Czas w social mediach a sen",
+       x = "Godziny dziennie",
+       y = "Sleep_Hours_Per_Night")
+```
+
+Ten wykres pokazuje związek między czasem w SM a liczbą godzin snu.
+
+- Jeśli trend jest malejący, sugeruje to, że większe korzystanie z SM wiąże się ze skracaniem snu.
+- Jeżeli punkty są mocno rozproszone, to znaczy, że sen zależy też od innych czynników i sam czas w SM nie tłumaczy wszystkiego.
+
+### 5.3 Czas w SM vs zdrowie psychiczne {#wykres_mh}
+
+```{r wykres_mh}
+# Czas w SM vs zdrowie psychiczne
+
+ggplot(d, aes(x = Avg_Daily_Usage_Hours, y = Mental_Health_Score)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(title = "Czas w social mediach a Mental_Health_Score",
+       x = "Godziny dziennie",
+       y = "Mental_Health_Score")
+```
+
+Ten wykres sprawdza, czy wraz ze wzrostem czasu korzystania z SM zmienia się `Mental_Health_Score`.
+
+- Jeżeli linia trendu spada, to sugeruje, że dłuższe korzystanie z SM wiąże się z niższym wynikiem zdrowia psychicznego (w tej skali).
+- Jeżeli trend jest prawie płaski, to wizualnie wygląda na słabą zależność liniową.
+
+### 5.4 Czas w SM vs konflikty {#wykres_konflikty}
+
+```{r wykres_konflikty}
+# Czas w SM vs konflikty
+
+ggplot(d, aes(x = Avg_Daily_Usage_Hours, y = Conflicts_Over_Social_Media)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(title = "Czas w social mediach a konflikty przez SM",
+       x = "Godziny dziennie",
+       y = "Conflicts_Over_Social_Media")
+```
+
+Ten wykres pokazuje, czy częstsze korzystanie z social mediów wiąże się z większą liczbą konfliktów `Conflicts_Over_Social_Media`.
+
+- Oś X to deklarowany czas korzystania z SM (godziny dziennie), a oś Y to wynik `Conflicts_Over_Social_Media` (skala punktowa). Każdy punkt odpowiada jednej osobie.
+- Jeżeli linia trendu rośnie, to sugeruje dodatnią zależność: wraz ze wzrostem czasu w SM średnio rośnie także poziom raportowanych konfliktów. Tego typu konflikt może dotyczyć np. relacji z rodziną, partnerem, znajomymi albo napięć wynikających z komunikacji online.
+- Jednocześnie ważny jest **rozrzut punktów**: jeśli przy tym samym czasie korzystania część osób ma bardzo niskie, a część wysokie konflikty, to znaczy, że czas w SM nie jest jedynym czynnikiem. W praktyce konflikty mogą zależeć np. od stylu korzystania (scrollowanie vs dyskusje), relacji społecznych, stresu czy cech osobowości.
+- Zwróć uwagę, że `Conflicts_Over_Social_Media` często bywa zmienną „skokową” (np. całkowite wartości z kwestionariusza). Wtedy na wykresie mogą pojawić się poziome „paski” i duże nagromadzenia punktów. To jest normalne i wynika ze skali pomiaru.
+- Warto też sprawdzić, czy zależność jest w miarę liniowa. Czasami konflikty mogą rosnąć mocniej dopiero powyżej pewnego progu czasu (np. > 6 godzin). W takiej sytuacji prosta regresji liniowej jest tylko przybliżeniem i może nie oddawać dobrze „załamania” trendu.
+- Pojedyncze obserwacje odstające (np. bardzo dużo godzin i bardzo wysoki wynik konfliktów) mogą mocno wpływać na linię trendu. Dlatego ten wykres traktujemy jako etap eksploracyjny, a nie dowód przyczynowy.
+
+
+```{r wykresy_png_setup, echo=FALSE, message=FALSE, warning=FALSE}
+# --- lokalizacja danych i folderu z PNG ---
+data_file_name <- "Students Social Media Addiction.csv"
+candidates <- c(".", "..", "../..")
+
+data_file <- NA_character_
+for (dd in candidates) {
+  fp <- file.path(dd, data_file_name)
+  if (file.exists(fp)) { data_file <- fp; break }
+}
+
+base_dir <- if (!is.na(data_file)) dirname(data_file) else "."
+
+# PNG mogą być zapisywane albo w katalogu raportu ("fig/"), albo obok danych (base_dir/fig)
+fig_dir_a <- "fig"
+fig_dir_b <- file.path(base_dir, "fig")
+
+if (!dir.exists(fig_dir_a)) dir.create(fig_dir_a, recursive = TRUE)
+if (!dir.exists(fig_dir_b)) dir.create(fig_dir_b, recursive = TRUE)
+
+needed_png <- c(
+  "01_platformy.png",
+  "02_hist_uzycie.png",
+  "03_usage_vs_addicted.png",
+  "04_sleep_vs_addicted.png",
+  "05_box_yesno_usage.png",
+  "06_hist_addicted.png",
+  "07_box_yesno_addicted.png",
+  "08_box_platform_addicted.png",
+  "09_age_vs_addicted.png",
+  "10_lm_resid_fitted.png",
+  "11_lm_qq.png",
+  "12_corrplot.png",
+  "13_roc_logit.png"
+)
+
+# wybierz folder, w którym jest więcej gotowych plików
+count_a <- sum(file.exists(file.path(fig_dir_a, needed_png)))
+count_b <- sum(file.exists(file.path(fig_dir_b, needed_png)))
+fig_dir  <- if (count_b > count_a) fig_dir_b else fig_dir_a
+
+missing_png <- needed_png[!file.exists(file.path(fig_dir, needed_png))]
+
+# spróbuj znaleźć skrypt (w katalogu raportu lub obok danych)
+script_candidates <- c(
+  "analiza_socialmedia_BEST_PLUS_FINAL.R",
+  file.path(base_dir, "analiza_socialmedia_BEST_PLUS_FINAL.R"),
+  file.path("..", "analiza_socialmedia_BEST_PLUS_FINAL.R")
+)
+script_fp <- script_candidates[file.exists(script_candidates)][1]
+
+# Jeżeli brakuje PNG i jest skrypt – spróbuj je wygenerować
+if (length(missing_png) > 0 && !is.na(script_fp) && file.exists(script_fp)) {
+  suppressWarnings(suppressMessages(
+    capture.output(source(script_fp, local = TRUE))
+  ))
+}
+
+# po ewentualnym generowaniu wybierz folder ponownie (tam, gdzie jest więcej plików)
+count_a <- sum(file.exists(file.path(fig_dir_a, needed_png)))
+count_b <- sum(file.exists(file.path(fig_dir_b, needed_png)))
+fig_dir  <- if (count_b > count_a) fig_dir_b else fig_dir_a
+```
+
+### 5.5 Struktura wyboru platform {#png_platformy}
+
+```{r png_platformy, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "01_platformy.png"))
+```
+
+Wykres pokazuje strukturę najczęściej wybieranych platform w próbie. Taka informacja pomaga zrozumieć, gdzie studenci spędzają najwięcej czasu i które kanały mogą być kluczowe przy interpretacji kolejnych zależności. To opis rozkładu w badanej grupie, bez wniosków o przyczynowości.
+
+
+### 5.6 Rozkład czasu korzystania z social mediów {#png_hist_uzycie}
+
+```{r png_hist_uzycie, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "02_hist_uzycie.png"))
+```
+
+Histogram przedstawia rozkład czasu spędzanego w social mediach. W praktyce oceniamy tu, czy większość osób skupia się przy niższych wartościach (np. kilka godzin), czy występuje ogon po stronie wysokich wartości (pojedyncze osoby z bardzo długim czasem). To ważne przy doborze testów i interpretacji średniej.
+
+
+### 5.7 Czas w social mediach a poziom uzależnienia {#png_usage_vs_addicted}
+
+```{r png_usage_vs_addicted, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "03_usage_vs_addicted.png"))
+```
+
+Wykres pokazuje zależność pomiędzy czasem korzystania a wskaźnikiem uzależnienia. Jeśli widoczny jest trend rosnący, sugeruje to dodatni związek: więcej czasu częściej idzie w parze z wyższym wynikiem uzależnienia. To nadal zależność korelacyjna, nie dowód przyczyny.
+
+
+### 5.8 Sen a poziom uzależnienia {#png_sleep_vs_addicted}
+
+```{r png_sleep_vs_addicted, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "04_sleep_vs_addicted.png"))
+```
+
+Wykres zestawia długość snu z poziomem uzależnienia. Często w danych tego typu widać, że niższy sen współwystępuje z wyższym uzależnieniem. Interpretujemy to jako współwystępowanie cech w próbie, a nie pewny wpływ jednej zmiennej na drugą.
+
+
+### 5.9 Czas w social mediach w grupach „Yes/No” {#png_box_yesno_usage}
+
+```{r png_box_yesno_usage, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "05_box_yesno_usage.png"))
+```
+
+Porównanie pudełkowe pokazuje różnice w czasie korzystania między grupami „Yes/No” (np. deklarowany wpływ na naukę). Patrzymy na medianę, rozrzut i obserwacje odstające. Jeśli rozkłady wyraźnie się rozjeżdżają, to jest to argument za istotną różnicą między grupami.
+
+
+### 5.10 Rozkład wskaźnika uzależnienia {#png_hist_addicted}
+
+```{r png_hist_addicted, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "06_hist_addicted.png"))
+```
+
+Histogram wskaźnika uzależnienia pokazuje, jak rozkłada się wynik w badanej próbie. Dzięki temu widać, czy większość osób ma wyniki umiarkowane, czy są skupienia przy wysokich wartościach. To pomaga ocenić „profil” próby i potencjalne wartości odstające.
+
+
+### 5.11 Uzależnienie w grupach „Yes/No” {#png_box_yesno_addicted}
+
+```{r png_box_yesno_addicted, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "07_box_yesno_addicted.png"))
+```
+
+Wykres pudełkowy porównuje poziom uzależnienia w dwóch grupach „Yes/No”. Różnice w medianie i rozrzucie to szybka wizualna informacja o tym, czy deklaracje uczestników idą w parze z innym poziomem uzależnienia. Pełną ocenę wspiera później test statystyczny.
+
+
+### 5.12 Uzależnienie a najczęściej używana platforma {#png_box_platform_addicted}
+
+```{r png_box_platform_addicted, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "08_box_platform_addicted.png"))
+```
+
+Wykres pokazuje, czy poziom uzależnienia różni się między platformami (np. TikTok, Instagram itd.). To może sugerować, że charakter korzystania jest inny zależnie od aplikacji. Trzeba pamiętać, że grupy mogą mieć różne liczebności, co wpływa na stabilność porównań.
+
+
+### 5.13 Wiek a uzależnienie {#png_age_vs_addicted}
+
+```{r png_age_vs_addicted, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "09_age_vs_addicted.png"))
+```
+
+Wykres zestawia wiek z poziomem uzależnienia. W danych studenckich zakres wieku bywa wąski, więc silny trend nie zawsze musi się pojawić. Jeśli zależność jest słaba, to też jest wynik: wiek w tej próbie może nie różnicować uzależnienia w sposób wyraźny.
+
+
+### 5.14 Diagnostyka modelu liniowego: reszty vs dopasowanie {#png_lm_resid_fitted}
+
+```{r png_lm_resid_fitted, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "10_lm_resid_fitted.png"))
+```
+
+To klasyczny wykres diagnostyczny dla modelu liniowego: reszty w funkcji wartości dopasowanych. Szukamy wzorca (np. „lejka” dla heteroskedastyczności) lub nieliniowości. Jeśli punkty są w miarę losowo rozrzucone wokół zera, założenia modelu są bardziej wiarygodne.
+
+
+### 5.15 Diagnostyka modelu liniowego: wykres Q–Q {#png_lm_qq}
+
+```{r png_lm_qq, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "11_lm_qq.png"))
+```
+
+Wykres Q–Q służy do oceny, czy reszty modelu liniowego są zbliżone do rozkładu normalnego. Punkty blisko prostej sugerują zgodność z normalnością, a odchylenia na końcach mogą wskazywać na grube ogony lub obserwacje odstające. To wpływa na interpretację testów w modelu.
+
+
+### 5.16 Korelacje między zmiennymi (corrplot) {#png_corrplot}
+
+```{r png_corrplot, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "12_corrplot.png"))
+```
+
+Macierz korelacji pokazuje siłę i kierunek zależności liniowych między zmiennymi. Najbardziej „intensywne” pola wskazują pary o najsilniejszym związku. Taki wykres jest też szybkim sposobem na wychwycenie współliniowości przed modelowaniem.
+
+
+### 5.17 Krzywa ROC dla modelu logistycznego {#png_roc_logit}
+
+```{r png_roc_logit, echo=FALSE, message=FALSE, warning=FALSE, out.width='100%'}
+knitr::include_graphics(file.path(fig_dir, "13_roc_logit.png"))
+```
+
+Krzywa ROC ocenia jakość klasyfikacji w modelu logistycznym (trade-off między czułością i swoistością). Im bardziej krzywa „idzie do lewego górnego rogu”, tym lepiej model rozróżnia klasy. To ocena predykcyjna, a nie dowód relacji przyczynowej.
+## 6. Testy statystyczne {#ttest}
+
+```{r ttest}
+# Porównanie grup Yes vs No
+
+vars_yesno <- c(
+  "Avg_Daily_Usage_Hours",
+  "Sleep_Hours_Per_Night",
+  "Addicted_Score",
+  "Mental_Health_Score",
+  "Conflicts_Over_Social_Media",
+  "Age"
+)
+vars_yesno <- intersect(vars_yesno, names(d))
+
+res_t <- purrr::map(vars_yesno, ~t.test(reformulate("Affects_Academic_Performance", response = .x), data = d))
+
+names(res_t) <- vars_yesno
+
+# Wyniki (skrót)
+purrr::imap(res_t, ~broom::tidy(.x))
+```
+
+W tym chuncku wykonujemy serię **testów t-Studenta** porównujących dwie grupy studentów:
+
+- grupa **No**: osoby, które deklarują, że social media nie wpływają na wyniki w nauce,
+- grupa **Yes**: osoby, które deklarują, że social media wpływają na wyniki w nauce.
+
+Cała logika jest taka, żeby nie robić testu „ręcznie” dla każdej zmiennej osobno, tylko zrobić to automatycznie w pętli (tutaj pętla jest zrobiona przez `purrr::map`).
+
+Co dokładnie dzieje się linijka po linijce:
+
+1. `vars_yesno <- c(...)` tworzy listę zmiennych liczbowych, które chcemy porównać między grupami. Są tu:
+   - `Avg_Daily_Usage_Hours` (czas w social mediach),
+   - `Sleep_Hours_Per_Night` (sen),
+   - `Addicted_Score` (uzależnienie),
+   - `Mental_Health_Score` (zdrowie psychiczne),
+   - `Conflicts_Over_Social_Media` (konflikty),
+   - `Age` (wiek).
+
+2. `vars_yesno <- intersect(vars_yesno, names(d))` zostawia tylko te zmienne, które faktycznie istnieją w danych `d`. To jest zabezpieczenie, żeby raport nie wywalił błędu, jeśli jakaś nazwa byłaby inna.
+
+3. `purrr::map(vars_yesno, ~t.test(...))` uruchamia test t dla każdej zmiennej z listy.
+
+   - `reformulate("Affects_Academic_Performance", response = .x)` buduje formułę typu:
+     `ZMIENNA ~ Affects_Academic_Performance`
+     czyli np. `Sleep_Hours_Per_Night ~ Affects_Academic_Performance`.
+
+   - `t.test(..., data = d)` wykonuje test t-Studenta porównujący średnie dwóch grup (Yes i No). Domyślnie w R jest to wersja Welcha, która nie zakłada równości wariancji.
+
+4. `names(res_t) <- vars_yesno` nadaje wynikom nazwy, żeby łatwiej było się w nich odnaleźć (wynik dla snu będzie pod nazwą `Sleep_Hours_Per_Night` itd.).
+
+5. `purrr::imap(res_t, ~broom::tidy(.x))` konwertuje każdy wynik testu t do „czystej” tabelki.
+
+W tabelkach zwykle pojawiają się m.in.:
+
+- `estimate`: różnica średnich (średnia w jednej grupie minus średnia w drugiej),
+- `statistic`: wartość statystyki t,
+- `p.value`: wartość p (czy różnica jest istotna statystycznie),
+- `conf.low` i `conf.high`: przedział ufności dla różnicy średnich,
+- `parameter`: stopnie swobody (df).
+
+Jak to interpretować:
+
+- jeśli `p.value` jest małe (np. < 0.05), to średnie w grupach Yes i No różnią się istotnie statystycznie,
+- znak `estimate` mówi kierunek różnicy (czy grupa Yes ma średnio więcej czy mniej),
+- przedział ufności pokazuje, w jakim zakresie może być „prawdziwa” różnica średnich.
+
+To porównanie jest ważne, bo pozwala sprawdzić, czy deklaracja „wpływa na naukę” idzie w parze z realnymi różnicami w zachowaniach i wskaźnikach (czas w SM, sen, uzależnienie, dobrostan, konflikty).
+
+### 6.1 Średnie w grupach Yes/No {#srednie_yesno}
+
+```{r srednie_yesno}
+vars <- c(
+  "Avg_Daily_Usage_Hours",
+  "Sleep_Hours_Per_Night",
+  "Addicted_Score",
+  "Mental_Health_Score",
+  "Conflicts_Over_Social_Media",
+  "Age"
+)
+vars <- intersect(vars, names(d))
+
+means_tbl <- d %>%
+  group_by(Affects_Academic_Performance) %>%
+  summarise(
+    n = n(),
+    across(
+      all_of(vars),
+      list(srednia = ~mean(.x, na.rm = TRUE), sd = ~sd(.x, na.rm = TRUE)),
+      .names = "{.col}_{.fn}"
+    ),
+    .groups = "drop"
+  )
+
+means_tbl %>%
+  knitr::kable(
+    digits = 2,
+    caption = "Średnie i odchylenia standardowe w grupach Affects_Academic_Performance (No/Yes)"
+  )
+```
+
+Ten chunk wylicza tabelę porównawczą dla grup **No** i **Yes**:
+
+- `group_by(Affects_Academic_Performance)` dzieli dane na dwie grupy.
+- `n = n()` podaje liczebność w każdej grupie.
+- `across(..., srednia, sd)` liczy średnią i odchylenie standardowe dla wskazanych zmiennych.
+- `knitr::kable(...)` formatuje wynik jako czytelną tabelę w raporcie.
+
+
+### 6.2 Testy nieparametryczne i wielkość efektu {#nieparam}
+
+W testach t zakładamy (w uproszczeniu), że porównujemy średnie i że rozkłady nie są „totalnie dziwne”.  
+Dlatego dokładamy też wersję **nieparametryczną** (Wilcoxona), która jest bardziej odporna na odstające wartości.
+
+Dodatkowo pokazuję **Cohen’s d** (wielkość efektu), żeby nie kończyć tylko na p-value.
+
+```{r nieparam}
+cohen_d_yes_no <- function(x, g, ref = "No") {
+  g <- droplevels(as.factor(g))
+  if (length(levels(g)) != 2) return(NA_real_)
+  g <- relevel(g, ref = ref)
+
+  x0 <- x[g == levels(g)[1]]
+  x1 <- x[g == levels(g)[2]]
+
+  n0 <- sum(!is.na(x0)); n1 <- sum(!is.na(x1))
+  s0 <- sd(x0, na.rm = TRUE); s1 <- sd(x1, na.rm = TRUE)
+  if (is.na(s0) || is.na(s1) || n0 < 2 || n1 < 2) return(NA_real_)
+
+  sp <- sqrt(((n0 - 1) * s0^2 + (n1 - 1) * s1^2) / (n0 + n1 - 2))
+  if (sp == 0 || is.na(sp)) return(NA_real_)
+
+  m0 <- mean(x0, na.rm = TRUE); m1 <- mean(x1, na.rm = TRUE)
+  (m1 - m0) / sp
+}
+
+wilcox_safe <- function(formula, data) {
+  suppressWarnings(wilcox.test(formula, data = data, exact = FALSE))
+}
+
+num_yesno <- c("Avg_Daily_Usage_Hours","Sleep_Hours_Per_Night","Addicted_Score",
+               "Mental_Health_Score","Conflicts_Over_Social_Media","Age")
+num_yesno <- intersect(num_yesno, names(d))
+
+if ("Affects_Academic_Performance" %in% names(d) && length(num_yesno) > 0) {
+  tests_yesno <- purrr::map_dfr(num_yesno, function(v) {
+    f <- as.formula(paste0(v, " ~ Affects_Academic_Performance"))
+    tt <- t.test(f, data = d)
+    ww <- wilcox_safe(f, data = d)
+    d_eff <- cohen_d_yes_no(d[[v]], d$Affects_Academic_Performance, ref = "No")
+
+    est <- unname(tt$estimate) # mean(No), mean(Yes)
+    diff_yes_minus_no <- as.numeric(est[2] - est[1])
+
+    tibble(
+      zmienna = v,
+      diff_mean_yes_minus_no = diff_yes_minus_no,
+      t_p = tt$p.value,
+      wilcox_p = ww$p.value,
+      cohen_d = d_eff
+    )
+  }) %>% mutate(across(where(is.numeric), ~round(.x, 4)))
+
+  tests_yesno %>%
+    knitr::kable(
+      digits = 4,
+      caption = "Yes vs No: różnica średnich (Yes-No), p-value (t i Wilcox) oraz Cohen d"
+    )
+} else {
+  cat("Brak Affects_Academic_Performance lub brak zmiennych liczbowych do porównań.")
+}
+```
+
+Jak czytać tabelę:
+- `diff_mean_yes_minus_no` > 0: grupa **Yes** ma średnio więcej (np. więcej godzin, wyższy Addicted_Score).
+- `cohen_d`: im większa wartość bezwzględna, tym mocniejszy efekt (w praktyce często: ok. 0.2 mały, 0.5 średni, 0.8 duży).
+
+### 6.3 Zależności dla zmiennych kategorycznych (Chi-kwadrat) {#chi2}
+
+Tu sprawdzamy, czy odpowiedź **Yes/No** w `Affects_Academic_Performance` jest powiązana np. z płcią, poziomem studiów, platformą itd.  
+Oprócz p-value pokazujemy **V Cramera** jako miarę siły związku.
+
+```{r chi2}
+cramers_v <- function(tab) {
+  cs <- suppressWarnings(chisq.test(tab, correct = FALSE))
+  chi2 <- as.numeric(cs$statistic)
+  n <- sum(tab)
+  r <- nrow(tab); k <- ncol(tab)
+  sqrt(chi2 / (n * (min(r - 1, k - 1))))
+}
+
+cat_tests <- c("Gender","Academic_Level","Most_Used_Platform","Relationship_Status")
+cat_tests <- intersect(cat_tests, names(d))
+
+if ("Affects_Academic_Performance" %in% names(d) && length(cat_tests) > 0) {
+  chi_tbl <- purrr::map_dfr(cat_tests, function(v) {
+    tab <- table(d$Affects_Academic_Performance, d[[v]])
+    cs <- suppressWarnings(chisq.test(tab))
+    tibble(
+      zmienna = v,
+      chi2_p = cs$p.value,
+      cramers_v = cramers_v(tab)
+    )
+  }) %>% mutate(across(where(is.numeric), ~round(.x, 4)))
+
+  chi_tbl %>%
+    knitr::kable(
+      digits = 4,
+      caption = "Chi-kwadrat: Affects_Academic_Performance vs zmienne kategoryczne (plus V Cramera)"
+    )
+} else {
+  cat("Brak Affects_Academic_Performance lub brak zmiennych kategorycznych do testu chi^2.")
+}
+```
+
+Interpretacja wyników:
+
+- `chi2_p` (p-value) mówi, czy w próbie widać istotną zależność między **Yes/No** a daną zmienną kategoryczną.
+- `cramers_v` mówi o **sile związku**: wartości bliskie 0 to słaby związek, większe wartości to mocniejszy związek.
+
+W praktyce może być tak, że p-value wyjdzie małe (bo próba jest duża), ale `V Cramera` będzie małe, czyli zależność istnieje, ale jest raczej słaba.
+
+
+### 6.4 Różnice między wieloma grupami (Kruskal-Wallis) {#kruskal}
+
+Test t jest dla dwóch grup. Jeśli mamy więcej grup (np. różne platformy), to robimy **Kruskal-Wallis**.  
+Potem (gdy wyjdzie istotnie) można dorzucić porównania parami (Wilcoxon + poprawka BH).
+
+```{r kruskal}
+if ("Most_Used_Platform" %in% names(d) && "Addicted_Score" %in% names(d)) {
+  d_pl <- d %>% mutate(Most_Used_Platform = fct_lump_n(Most_Used_Platform, n = 6, other_level = "Other"))
+  kw1 <- kruskal.test(Addicted_Score ~ Most_Used_Platform, data = d_pl)
+  kw1
+
+  pw1 <- suppressWarnings(pairwise.wilcox.test(
+    d_pl$Addicted_Score, d_pl$Most_Used_Platform,
+    p.adjust.method = "BH", exact = FALSE
+  ))
+  pw1
+} else {
+  cat("Brak Most_Used_Platform lub Addicted_Score.")
+}
+
+if ("Academic_Level" %in% names(d) && "Addicted_Score" %in% names(d)) {
+  kw2 <- kruskal.test(Addicted_Score ~ Academic_Level, data = d)
+  kw2
+
+  pw2 <- suppressWarnings(pairwise.wilcox.test(
+    d$Addicted_Score, d$Academic_Level,
+    p.adjust.method = "BH", exact = FALSE
+  ))
+  pw2
+} else {
+  cat("Brak Academic_Level lub Addicted_Score.")
+}
+```
+
+Jak czytać wynik Kruskala:
+
+- najpierw patrzymy na wynik `kruskal.test()` (p-value). Jeśli jest istotny, to znaczy, że **co najmniej dwie** grupy różnią się rozkładem `Addicted_Score`,
+- potem `pairwise.wilcox.test()` pokazuje, **które pary** grup się różnią (p-value jest już z poprawką BH).
+
+To podejście jest sensowne, gdy grup jest więcej niż 2 i nie chcemy zakładać normalności rozkładów.
+
+
+## 7. Modele {#modele}
+
+W tej sekcji przechodzimy od prostych porównań (korelacje, wykresy, testy t) do **modelowania statystycznego**, czyli próbujemy opisać zależności „bardziej formalnie” i jednocześnie uwzględnić kilka czynników naraz.
+
+Dlaczego to jest potrzebne?
+
+- Korelacje i wykresy pokazują ogólny kierunek zależności, ale nie rozdzielają wpływu kilku zmiennych naraz.
+- Testy t porównują tylko dwie grupy (Yes vs No) osobno dla każdej zmiennej, bez kontroli innych cech.
+
+Modele pozwalają:
+
+- ocenić, czy np. czas w SM dalej ma związek z wynikiem, gdy „trzymamy stałe” inne zmienne (sen, zdrowie psychiczne, konflikty, płeć itp.),
+- uzyskać liczbową miarę efektu (współczynnik w modelu liniowym lub OR w modelu logistycznym),
+- sprawdzić istotność statystyczną i niepewność (p-value i przedziały ufności).
+
+W raporcie używamy dwóch modeli:
+
+1. **Model liniowy (lm)**: gdy zmienna wynikowa jest liczbowa i ciągła. Tutaj przewidujemy `Addicted_Score`.
+2. **Model logistyczny (glm binomial)**: gdy zmienna wynikowa jest binarna (Yes/No). Tutaj przewidujemy prawdopodobieństwo odpowiedzi „Yes” w `Affects_Academic_Performance`.
+
+### 7.1 Model liniowy {#lm}
+
+```{r lm}
+# Model liniowy: co wpływa na Addicted_Score
+
+# platformy grupujemy: top 6 + Other
+
+d_m1 <- d %>%
+  mutate(Most_Used_Platform = forcats::fct_lump_n(Most_Used_Platform, n = 6, other_level = "Other"))
+
+m1 <- lm(
+  Addicted_Score ~ Avg_Daily_Usage_Hours + Sleep_Hours_Per_Night + Mental_Health_Score +
+    Conflicts_Over_Social_Media + Affects_Academic_Performance + Gender + Most_Used_Platform,
+  data = d_m1
+)
+
+summary(m1)
+car::vif(m1)
+```
+
+W tym chuncku budujemy **model liniowy**, gdzie zmienną objaśnianą jest `Addicted_Score` (poziom uzależnienia), a zmiennymi objaśniającymi są m.in. czas w SM, sen, zdrowie psychiczne, konflikty oraz cechy jakościowe.
+
+
+
+1. `d_m1 <- d %>% mutate(...)` tworzy kopię danych do modelu. Jedyna zmiana dotyczy platformy:
+   - `forcats::fct_lump_n(Most_Used_Platform, n = 6, other_level = "Other")` zostawia 6 najczęstszych platform, a pozostałe łączy do kategorii `Other`.
+   - To ułatwia estymację i interpretację, bo nie tworzymy w modelu kilkunastu bardzo rzadkich kategorii (które dawałyby niestabilne współczynniki).
+
+2. `m1 <- lm(...)` dopasowuje klasyczną regresję liniową metodą najmniejszych kwadratów (OLS).
+   - Wzór ma postać: `Addicted_Score ~ ...`.
+   - Współczynnik przy `Avg_Daily_Usage_Hours` mówi, jak średnio zmienia się `Addicted_Score`, gdy czas w SM rośnie o 1 godzinę, **przy założeniu**, że pozostałe zmienne w modelu są stałe.
+   - Analogicznie współczynniki przy `Sleep_Hours_Per_Night`, `Mental_Health_Score` i `Conflicts_Over_Social_Media` opisują ich „częściowy” związek z uzależnieniem.
+   - Zmienne jakościowe (`Affects_Academic_Performance`, `Gender`, `Most_Used_Platform`) są kodowane jako zestaw zmiennych zero-jedynkowych (R robi to automatycznie dla factorów). Współczynniki interpretujemy jako różnice względem kategorii bazowej.
+
+3. `summary(m1)` wyświetla podsumowanie modelu:
+   - oszacowane współczynniki (Estimate),
+   - błędy standardowe (Std. Error),
+   - statystyki t i p-value (czy efekt jest istotny statystycznie),
+   - dopasowanie modelu (R-squared, Adjusted R-squared) i test ogólny (F-statistic).
+
+4. `car::vif(m1)` liczy wskaźniki VIF (Variance Inflation Factor), czyli sprawdza **współliniowość** predyktorów.
+   - Gdy VIF jest wysokie, to znaczy, że zmienne objaśniające są mocno ze sobą skorelowane, a wtedy współczynniki mogą być mniej stabilne.
+   - W praktyce często przyjmuje się, że wartości około 1–5 są zwykle ok, a dużo wyższe mogą być problemem.
+
+Ten model traktujemy jako uzupełnienie analizy: pokazuje, czy obserwowane zależności (z wykresów i korelacji) utrzymują się, gdy uwzględniamy kilka czynników naraz.
+
+### 7.2 Model logistyczny {#logit}
+
+```{r logit}
+# Model logistyczny: co zwiększa szansę, że ktoś odpowie "Yes" (wpływa na naukę)
+
+m_logit <- glm(
+  Affects_Academic_Performance ~ Avg_Daily_Usage_Hours + Sleep_Hours_Per_Night + Age + Gender + Academic_Level,
+  data = d,
+  family = binomial()
+)
+
+# OR = iloraz szans
+or_tbl <- broom::tidy(m_logit, exponentiate = TRUE, conf.int = TRUE) %>%
+  transmute(
+    term = term,
+    OR = estimate,
+    OR_low = conf.low,
+    OR_high = conf.high,
+    p.value = p.value
+  )
+
+or_tbl
+
+# ROC + AUC
+pr <- predict(m_logit, type = "response")
+roc_obj <- pROC::roc(d$Affects_Academic_Performance, pr, levels = c("No", "Yes"), direction = "<")
+auc_val <- as.numeric(pROC::auc(roc_obj))
+
+# OR-y do tekstu (dla 2 najważniejszych zmiennych)
+or_usage <- or_tbl$OR[or_tbl$term == "Avg_Daily_Usage_Hours"][1]
+or_sleep <- or_tbl$OR[or_tbl$term == "Sleep_Hours_Per_Night"][1]
+
+plot(roc_obj, main = paste0("ROC (AUC = ", round(auc_val, 3), ")"))
+```
+
+W tym chuncku budujemy **model logistyczny**, czyli model dla zmiennej wynikowej typu **Yes/No**. Celem jest oszacowanie, które czynniki zwiększają (lub zmniejszają) prawdopodobieństwo, że student odpowie **"Yes"** w `Affects_Academic_Performance` (czyli że social media wpływają na wyniki w nauce).
+
+Co tu się dzieje po kolei:
+
+1. `m_logit <- glm(..., family = binomial())` dopasowuje regresję logistyczną.
+   - W modelu zmienną objaśnianą jest `Affects_Academic_Performance`.
+   - Predyktory to: `Avg_Daily_Usage_Hours`, `Sleep_Hours_Per_Night`, `Age`, `Gender`, `Academic_Level`.
+   - `family = binomial()` mówi R, że to jest model dla zmiennej binarnej. W praktyce modeluje on **logarytm ilorazu szans** (log-odds) odpowiedzi "Yes".
+
+2. Tabela OR (ilorazy szans):
+   - `broom::tidy(m_logit, exponentiate = TRUE, conf.int = TRUE)` pobiera współczynniki modelu i od razu je "odlogarytmowuje" (`exponentiate = TRUE`).
+   - Dzięki temu zamiast współczynników w log-odds dostajemy **OR** (odds ratio, iloraz szans).
+   - `conf.int = TRUE` dodaje przedziały ufności dla OR.
+   - `transmute(...)` wybiera tylko te kolumny, które są najbardziej czytelne w raporcie: nazwa zmiennej (`term`), OR, dolna i górna granica przedziału ufności oraz p-value.
+   - `or_tbl` wyświetla gotową tabelę.
+
+   Jak czytać OR:
+   - **OR > 1**: wzrost zmiennej zwiększa szanse odpowiedzi "Yes".
+   - **OR < 1**: wzrost zmiennej zmniejsza szanse odpowiedzi "Yes".
+   - Przykład: OR = 1.20 dla czasu w SM oznacza, że +1 godzina dziennie zwiększa szanse odpowiedzi "Yes" o ok. 20% (przy stałych pozostałych zmiennych).
+
+3. Ocena jakości predykcji (ROC i AUC):
+   - `predict(m_logit, type = "response")` liczy przewidywane prawdopodobieństwa odpowiedzi "Yes" dla każdej osoby (liczby od 0 do 1).
+   - `pROC::roc(...)` tworzy krzywą ROC, czyli porównuje czułość i swoistość dla różnych progów klasyfikacji.
+   - `auc(roc_obj)` liczy AUC (pole pod krzywą). AUC bliskie 0.5 oznacza brak zdolności rozróżniania, a im bliżej 1.0, tym lepsza klasyfikacja.
+   - `plot(roc_obj, ...)` rysuje krzywą ROC. Opcjonalnie można dodać linię odniesienia `abline(a=0,b=1,lty=2)`, która pokazuje wynik „losowy” (punkt odniesienia).
+
+Ten chunk jest więc podsumowaniem w formie modelu: pokazuje, które czynniki są statystycznie istotne w przewidywaniu odpowiedzi "Yes" oraz jak dobrze model ogólnie rozróżnia osoby z grupy Yes i No.
+
+## 8. Wnioski {#wnioski}
+
+Na podstawie statystyk opisowych, korelacji, wykresów oraz testów porównujących grupy (Yes/No) można sformułować następujące wnioski:
+
+1. **Czas korzystania z social mediów jest dodatnio powiązany z poziomem uzależnienia.** W danych wraz ze wzrostem `Avg_Daily_Usage_Hours` rośnie `Addicted_Score` (korelacja dodatnia; trend rosnący na wykresie) (rho Spearmana = `r round(rho_usage_add, 3)`, p = `r signif(p_usage_add, 3)`).
+2. **Większe korzystanie z SM wiąże się z krótszym snem.** Zależność `Avg_Daily_Usage_Hours` vs `Sleep_Hours_Per_Night` ma kierunek ujemny. (rho Spearmana = `r round(rho_usage_sleep, 3)`, p = `r signif(p_usage_sleep, 3)`).
+
+3. **Dobrostan psychiczny (mierzone `Mental_Health_Score`) współwystępuje z zachowaniami w SM.** Wyższy czas korzystania jest powiązany z niższym `Mental_Health_Score`, a `Mental_Health_Score` jest ujemnie powiązany z `Addicted_Score`.
+W danych: czas vs zdrowie psychiczne ma rho = `r round(rho_usage_mh, 3)` (p = `r signif(p_usage_mh, 3)`), a zdrowie psychiczne vs uzależnienie ma rho = `r round(rho_mh_add, 3)` (p = `r signif(p_mh_add, 3)`).
+
+4. **Konflikty przez social media rosną wraz z czasem korzystania.** `Avg_Daily_Usage_Hours` jest dodatnio powiązany z `Conflicts_Over_Social_Media`. (rho Spearmana = `r round(rho_usage_conf, 3)`, p = `r signif(p_usage_conf, 3)`).
+
+5. **Grupy Yes vs No różnią się istotnie statystycznie w kluczowych zmiennych (testy t-Studenta).** Osoby z grupy „Yes” (deklaracja wpływu na naukę) mają przeciętnie:
+   - wyższy czas korzystania z social mediów,
+   - krótszy sen,
+   - wyższy `Addicted_Score`,
+   - niższy `Mental_Health_Score`,
+   - wyższy poziom `Conflicts_Over_Social_Media`.
+
+   Dla porównania średnich (Yes minus No):
+   - czas w SM: **`r round(diff_usage_yes_minus_no, 2)` h/dzień**,
+   - sen: **`r round(-diff_sleep_yes_minus_no, 2)` h mniej**,
+   - Addicted_Score: **`r round(diff_add_yes_minus_no, 2)` pkt**,
+   - Mental_Health_Score: **`r round(-diff_mh_yes_minus_no, 2)` pkt mniej**,
+   - konflikty: **`r round(diff_conf_yes_minus_no, 2)` pkt**.
+
+6. **Model logistyczny sugeruje, że czas w SM i sen są ważnymi predyktorami odpowiedzi „Yes”.** Przy kontroli wieku, płci i poziomu studiów wzrost `Avg_Daily_Usage_Hours` zwiększa szanse odpowiedzi „Yes” (OR = `r round(or_usage, 2)`), a wzrost `Sleep_Hours_Per_Night` zmniejsza te szanse (OR = `r round(or_sleep, 2)`). Dodatkowo jakość klasyfikacji modelu (ROC) to AUC = **`r if (exists('auc_val')) round(auc_val, 3) else NA`**.
+
+Wyniki należy interpretować jako **zależności obserwacyjne** w badanej próbie. Raport nie rozstrzyga, czy social media *powodują* zmiany w śnie, dobrostanie psychicznym lub funkcjonowaniu w nauce.
+
+Z perspektywy praktycznej wyniki sugerują, że działania ukierunkowane na **higienę snu** oraz **ograniczanie czasu spędzanego w social mediach** mogą być istotnym elementem profilaktyki (szczególnie w grupie osób deklarujących wpływ na naukę). Jednocześnie, ze względu na ograniczenia danych (samoopis i brak pomiaru w czasie), rekomendacje należy traktować jako wstępne i wymagające potwierdzenia w badaniach o silniejszym schemacie (np. panelowych).
+
+## 9. Ograniczenia {#ograniczenia}
+
+Ograniczenia analizy wynikają głównie z charakteru danych oraz z przyjętych uproszczeń analitycznych. Poniższe punkty są kluczowe dla poprawnej interpretacji wyników.
+
+1. **Charakter obserwacyjny (przekrojowy)**: dane pochodzą z jednego pomiaru, więc nie da się wnioskować o kierunku zależności ani o przyczynowości (korelacja ≠ przyczyna). Przykładowo: wyższy czas w SM może wiązać się z gorszym snem, ale równie dobrze gorszy sen może sprzyjać dłuższemu korzystaniu z telefonu.
+2. **Samoopis i błąd deklaracji**: czas korzystania, sen oraz ocena wpływu na naukę są deklarowane przez respondentów. Może to powodować:
+   - błąd pamięci (niedokładne odtworzenie czasu),
+   - błąd społecznej aprobaty (zaniżanie lub zawyżanie odpowiedzi),
+   - różne rozumienie pytań przez respondentów.
+   W efekcie oszacowane zależności mogą być osłabione lub przeszacowane.
+3. **Brak informacji o doborze próby**: bez opisu sposobu zbierania danych (losowo vs dobór wygodny) nie da się ocenić reprezentatywności. Wnioski odnoszą się do tej konkretnej próby i nie muszą przenosić się na wszystkich studentów.
+4. **Ograniczony zakres wieku**: w próbie występują osoby w wieku `r age_min`–`r age_max` lat. Taki zakres jest typowy dla studentów, ale ogranicza możliwość uogólnienia wyników na osoby starsze lub młodsze.
+5. **Skale punktowe bez dokumentacji psychometrycznej**: w raporcie przyjmujemy, że wyższy wynik oznacza większe nasilenie zjawiska, jednak bez informacji o konstrukcji skal (np. liczba pozycji, rzetelność, trafność) interpretacja poziomów i porównań może być ograniczona.
+6. **Możliwe zmienne pominięte (confounding)**: w danych brakuje wielu czynników, które mogą jednocześnie wpływać na korzystanie z SM i wyniki (np. stres, obciążenie nauką, praca, wsparcie społeczne, cechy osobowości, stan zdrowia). To może prowadzić do błędnej interpretacji zależności jako „bezpośrednich”, mimo że częściowo wynikają z innych czynników.
+7. **Wspólne źródło pomiaru (błąd wspólnej metody pomiaru)**: wiele zmiennych pochodzi z tego samego kwestionariusza w tym samym momencie. To może sztucznie wzmacniać związki między zmiennymi (np. osoba w gorszym nastroju może jednocześnie surowiej oceniać sen, dobrostan i wpływ SM).
+8. **Uproszczenie zmiennej wynikowej „Yes/No”**: `Affects_Academic_Performance` jest subiektywną oceną. Dwie osoby mogą rozumieć pytanie inaczej (np. „wpływ” jako spadek ocen, spadek koncentracji albo marnowanie czasu), a odpowiedź binarna nie oddaje skali zjawiska.
+9. **Wielokrotne testowanie**: wykonujemy kilka testów t-Studenta dla różnych zmiennych. Przy wielu testach rośnie ryzyko błędu I rodzaju (fałszywie istotne wyniki). Dlatego można rozważyć korektę p-value (np. Bonferroni/FDR), szczególnie jeśli analizujemy wiele zmiennych naraz.
+10. **Założenia modeli (liniowy i logistyczny)**: modele zakładają określoną postać zależności (m.in. liniowość w predyktorach, niezależność obserwacji, brak silnej współliniowości). VIF pomaga ocenić współliniowość w modelu liniowym, ale nadal:
+   - zależności mogą być nieliniowe,
+   - pojedyncze obserwacje odstające mogą wpływać na wyniki,
+   - w modelu logistycznym OR „na 1 godzinę” może być duże, bo skala czasu ma wąski zakres i efekt nie musi być stały w całym zakresie.
+11. **Brak walidacji predykcyjnej**: model logistyczny oceniamy na tych samych danych, na których go uczymy (AUC z ROC). Bez podziału train/test lub walidacji krzyżowej wynik AUC może być optymistyczny.
+
+Z powyższych powodów raport należy traktować jako analizę eksploracyjną zależności w próbie, a nie jako dowód przyczynowo-skutkowy.
+
+### 9.1 Rekomendacje {#rekomendacje}
+
+Żeby wnioski były mocniejsze i bardziej „twarde”, w kolejnych badaniach warto rozważyć:
+
+1. **Obiektywny pomiar czasu w SM**: np. zrzuty z „Screen Time/Digital Wellbeing” albo logi aplikacji (zamiast samej deklaracji).
+2. **Badanie w czasie (panel/longitudinal)**: pomiar tych samych osób w kilku momentach pozwoli lepiej ocenić kierunek zależności (co było pierwsze: sen czy SM).
+3. **Lepszy dobór próby i opis rekrutacji**: np. losowanie warstwowe lub przynajmniej opis, skąd są respondenci (uczelnia, kierunek, rocznik), żeby ocenić reprezentatywność.
+4. **„Twardsza” miara wyników w nauce**: np. średnia ocen z USOS albo inny obiektywny wskaźnik (jeśli możliwe), zamiast samej odpowiedzi Yes/No.
+5. **Walidowane narzędzia psychometryczne**: użycie standardowych skal (np. do dobrostanu/uzależnienia) oraz raportowanie rzetelności (np. alfa Cronbacha).
+6. **Rozszerzenie modelowania**: sprawdzenie nieliniowości (np. splajny), interakcji (np. płeć × czas w SM), oraz odporność wyników na obserwacje odstające.
+7. **Walidacja predykcyjna modeli**: podział na zbiór treningowy/testowy lub walidacja krzyżowa, żeby ocenić, czy model „trzyma” poza próbką.
+8. **Kontrola wielokrotnego testowania**: formalna korekta p-value (Bonferroni/FDR) albo ograniczenie liczby testów do kluczowych hipotez.
+
+Podsumowując, wskazane usprawnienia pozwoliłyby ograniczyć błąd pomiaru i ryzyko stronniczości (bias), a także zwiększyć możliwość uogólniania wyników na szerszą populację studentów. W szczególności dane zbierane w czasie oraz obiektywny pomiar czasu korzystania mogłyby pomóc lepiej rozdzielić, co jest potencjalną przyczyną, a co skutkiem. W efekcie kolejne badanie dawałoby mocniejsze wnioski i bardziej wiarygodne rekomendacje praktyczne.
+
+## 10. Info o sesji {#sesja}
+
+```{r sessioninfo}
+sessionInfo()
+```
+
