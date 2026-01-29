@@ -43,5 +43,5 @@ Skrypt sam:
 - R (najlepiej aktualny) + RStudio (opcjonalnie, ale wygodnie).
 - Pakiety instalują się automatycznie z CRAN (m.in. `tidyverse`, `broom`, `corrplot`, `car`, `pROC`).
 
-## Autor / kontekst
-Projekt robiony jako praca zaliczeniowa z analizy danych (PG WZiE). 
+## Autor
+Dawid Drawc 
