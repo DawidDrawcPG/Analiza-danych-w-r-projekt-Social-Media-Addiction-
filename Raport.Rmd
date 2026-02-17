@@ -1,0 +1,652 @@
+---
+title: "Social Media Addiction – Analiza danych"
+author: "Dawid Drawc"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    number_sections: false
+    includes:
+      in_header: header.html
+---
+
+```{r, include=FALSE}
+# Ustawienia języka
+Sys.setlocale("LC_ALL", "Polish")
+
+
+
+# Pakiety
+library(tidyverse)
+library(janitor)
+library(naniar)
+library(rstatix)
+library(broom)
+library(car)
+library(dplyr)
+library(knitr)
+library(sf)
+library(rnaturalearth)
+library(kableExtra)
+
+
+# Wczytanie danych 
+url <- "https://github.com/DawidDrawcPG/Analiza-danych-w-r-projekt-Social-Media-Addiction-/blob/main/Students%20Social%20Media%20Addiction.csv?raw=true"
+
+data <- read.csv(url) %>%
+  rename(
+    id_studenta = Student_ID,
+    wiek = Age,
+    plec = Gender,
+    poziom_nauki = Academic_Level,
+    status_zwiazku = Relationship_Status,
+    kraj = Country,
+    platforma = Most_Used_Platform,
+    czas_sm_godz = Avg_Daily_Usage_Hours,
+    sen_godz = Sleep_Hours_Per_Night,
+    zdrowie_psychiczne = Mental_Health_Score,
+    konflikty_przez_sm = Conflicts_Over_Social_Media,
+    wynik_uzaleznienia = Addicted_Score,
+    wplywa_na_nauke = Affects_Academic_Performance
+  )
+
+
+# Szybki podgląd
+glimpse(data)
+names(data)
+```
+
+# 1. Wprowadzenie
+
+  W tym raporcie sprawdzam, czy sposób korzystania z mediów społecznościowych wiąże się ze snem, uzależnieniem oraz tym, czy studenci czują wpływ na naukę. Dane m.in. średni dzienny czas w social mediach w godzinach, liczbę godzin snu, wynik uzależnienia oraz odpowiedź „Yes/No” o wpływie na naukę.
+
+## Cel i pytania badawcze
+
+Celem raportu jest sprawdzenie, jak średni dzienny czas korzystania z social mediów (`czas_sm_godz`) wiąże się z:
+
+- poziomem uzależnienia (`wynik_uzaleznienia`),
+- snem (`sen_godz`),
+- zdrowiem psychicznym (`zdrowie_psychiczne`),
+- konfliktami przez social media (`konflikty_przez_sm`),
+- deklaracją wpływu na wyniki w nauce (`wplywa_na_nauke`, Yes/No).
+
+Pytania badawcze:
+
+1. Czy osoby z wyższym czasem korzystania mają wyższy poziom uzależnienia?
+2. Czy wyższy czas korzystania wiąże się z krótszym snem?
+3. Czy wyższy czas korzystania wiąże się z gorszym zdrowiem psychicznym?
+4. Czy wyższy czas korzystania wiąże się z większą liczbą konfliktów?
+5. Czy osoby, które mówią „Yes” (wpływa na naukę), różnią się od „No” (czas, sen, uzależnienie itp.)?
+
+```{r, fig.cap="Podstawowe informacje o danych"}
+info <- data.frame(
+  "Liczba wierszy" = nrow(data),
+  "Liczba kolumn" = ncol(data),
+  check.names = FALSE
+)
+
+kable(info, align = "l") %>% 
+  kable_styling(full_width = FALSE, position = "left")
+
+kolumny <- data.frame(
+  Nr = 1:ncol(data),
+  "Nazwa kolumny" = names(data),
+  check.names = FALSE
+)
+kable(kolumny, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+# 2. Data Cleansing, Wrangling
+
+## 2.1 Braki danych i duplikaty
+```{r, fig.cap="Braki danych i duplikaty"}
+# Ile jest NA w całym zbiorze?
+suma_na <- sum(is.na(data))
+
+suma_na <- data.frame(
+  "Łączna liczba brakujących danych (NA)" = suma_na,
+  check.names = FALSE
+)
+
+kable(suma_na, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+# Braki w kolumnach
+braki_kolumny <- data.frame(
+  "Nazwy Id" = names(data),
+  "Liczba na" = colSums(is.na(data)),
+  check.names = FALSE
+)
+
+
+kable(braki_kolumny, align = "l", row.names = FALSE) %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+# Czy id_studenta się duplikuje
+duplikaty_id <- data %>%
+  count(id_studenta) %>%
+  filter(n > 1)
+
+kable(duplikaty_id)
+
+vis_miss(data)
+```
+  Najpierw przygotowałem dane i zrobiłem podstawowy opis. Potem sprawdziłem zależności korelacjami i testami różnic między grupami. Na końcu zbudowałem modele regresję liniową dla snu oraz model logitowy dla deklarowanego wpływu na naukę. Trzeba pamiętać, że to dane z jednego momentu, więc pokazują zależności, ale nie dowodzą przyczyny.
+  
+## 2.2  Przedstawienie typów danych porządkowanie kategorii za pomocą tabeli
+```{r, fig.cap="Tabela: typy danych i kategorie"}
+data2 <- data %>%
+  mutate(
+    plec = factor(plec),
+    poziom_nauki = factor(poziom_nauki, levels = c("High School", "Undergraduate", "Graduate")),
+    status_zwiazku = factor(status_zwiazku),
+    platforma = factor(platforma),
+    wplywa_na_nauke = factor(wplywa_na_nauke, levels = c("No", "Yes"))
+  )
+
+
+tab <- gtsummary::tbl_summary(data2)
+
+tab %>%
+  gtsummary::as_kable_extra() %>%
+  scroll_box(height = "400px")
+
+
+```
+  Dane zawierają zmienne liczbowe wiek, czas w social mediach, sen, wynik uzależnienia, zdrowie psychiczne oraz zmienne kategoryczne płeć, poziom nauki, kraj, platforma, status związku i wpływ na naukę Yes/No. Dla analizy uporządkowałem kategorie tam, gdzie to było potrzebne, żeby później wykresy i tabele były czytelne.
+
+### 2.3 Mapa pochodzenia ankietowanych 
+```{r, fig.cap="Mapa pochodzenia ankietowanych"}
+
+kraje_licznosc <- data2 %>%
+  count(kraj, name = "licznosc")
+
+world <- rnaturalearth::ne_countries(scale = "medium", returnclass = "sf")
+
+mapa <- world %>%
+  left_join(kraje_licznosc, by = c("name" = "kraj"))
+
+ggplot(mapa) +
+  geom_sf(aes(fill = licznosc)) +
+  labs(title = "Liczność studentów wg kraju", fill = "Liczność")
+
+```
+  Ankietowani pochodzą z wielu krajów, więc dane są zróżnicowane geograficznie. Najwięcej osób było z Indii (53), USA (40) i Kanady (34). Wiele krajów ma mniejsze liczności, ale ogólnie widać, że to próba międzynarodowa, a nie z jednego miejsca.
+
+## 2.4 Nowe zmienne do analizy
+```{r, fig.cap="Nowe zmienne"}
+data3 <- data2 %>%
+  mutate(
+    grupa_uzycia = cut(
+      czas_sm_godz,
+      breaks = c(0, 2, 4, 6, 8, 10, Inf),
+      labels = c("0-2", "2-4", "4-6", "6-8", "8-10", ">10"),
+      include.lowest = TRUE
+    ),
+    niski_sen = if_else(sen_godz < 7, "<7h", ">=7h") %>% factor()
+  )
+```
+  Dodałem dwie nowe zmienne: `grupa_uzycia`, która dzieli czas korzystania z social media na kategorie oraz `niski_sen`, która klasyfikuje osoby na te, które śpią mniej niż 7 godzin i te, które śpią 7 lub więcej godzin. To pozwoli mi później sprawdzić, czy są różnice między tymi grupami w kontekście snu i uzależnienia.
+
+## 2.5 Sprawdzenie nowych zmiennych
+```{r, fig.cap="Sprawdzenie nowych zmiennych"}
+tabela_grupa_uzycia <- as.data.frame(table(data3$grupa_uzycia))
+
+colnames(tabela_grupa_uzycia) <- c("Przedziały czasowe korzystania z social media", "Liczba osób")
+
+kable(tabela_grupa_uzycia, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+tabela_niski_sen <- as.data.frame(table(data3$niski_sen))
+
+colnames(tabela_niski_sen) <- c("Czas snu", "Liczba osób")
+
+kable(tabela_niski_sen, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+  Sprawdziłem, czy nowe zmienne mają sens i czy liczności się zgadzają z całą próbą. W grupach czasu korzystania wyszło 0–2h = 2 osoby, 2–4h = 167, 4–6h = 393, 6–8h = 138, 8–10h = 5 osób. W podziale snu wyszło: <7h = 359 osób, a ≥7h = 346 osób. Suma w obu przypadkach zgadza się do 705.
+
+
+# 3. Wizualizacja danych
+
+## 3.1 Rozkłady 
+```{r, fig.cap="Histogramy czasu i snu"}
+ggplot(data3, aes(x = czas_sm_godz)) +
+  geom_histogram(bins = 25) +
+  labs(title = "Rozkład: czas w social mediach", x = "Godziny/dzień", y = "Liczba osób")
+
+ggplot(data3, aes(x = sen_godz)) +
+  geom_histogram(bins = 25) +
+  labs(title = "Rozkład: sen", x = "Godziny/noc", y = "Liczba osób")
+```
+  Widać, że czas w social mediach najczęściej kręci się w okolicach 4–6 godzin dziennie. Najwięcej słupków jest właśnie w tym środku, a im bliżej skrajów, czyli gdy ktoś korzysta bardzo mało albo bardzo dużo, tym osób jest mniej. Dla snu widać, że większość osób śpi około 6–8 godzin. Największe zagęszczenie jest blisko 7 godzin, a mało jest osób śpiących bardzo krótko np. poniżej 5 albo bardzo długo powyżej 9 godzin.
+
+
+## 3.2 Zależność: czas w social mediach vs sen
+```{r, fig.cap="Czas w social mediach a sen"}
+
+ggplot(data3, aes(x = czas_sm_godz, y = sen_godz)) +
+  geom_jitter(alpha = 0.5, width = 0.2, height = 0.2) +
+  geom_smooth(method = "loess", formula = y ~ x, se = TRUE) +
+  labs(title = "Czas w social mediach a sen",
+       x = "Godziny w social mediach (dziennie)",
+       y = "Sen (godziny w nocy)")
+```
+  Na wykresie widać wyraźny trend: im więcej czasu w social mediach, tym mniej snu. To nie jest idealna linia, ale kierunek jest mocny i powtarzalny. Już na etapie wizualizacji widać, że większe używanie social mediów często idzie w parze z krótszym snem.
+
+## 3.3 Porównania grup 
+```{r, fig.cap="Boxploty porównań grup"}
+ggplot(data3, aes(x = wplywa_na_nauke, y = sen_godz)) +
+  geom_boxplot() +
+  labs(title = "Sen a wpływ na naukę (Yes/No)", x = "Wpływa na naukę", y = "Sen")
+
+ggplot(data3, aes(x = platforma, y = wynik_uzaleznienia)) +
+  geom_boxplot() +
+  coord_flip() +
+  labs(title = "Uzależnienie vs platforma", x = "Platforma", y = "Wynik uzależnienia")
+```
+  Gdy porównałem osoby „Yes” i „No”, to różnice były duże. Grupa „Yes” ma wyższy czas korzystania, krótszy sen i wyższy wynik uzależnienia. Na wykresach widać, że te grupy nie są do siebie podobne — szczególnie w czasie korzystania i w wyniku uzależnienia.
+  
+## 3.4 Grupy użycia i niski sen
+```{r, fig.cap="Grupy użycia i niski sen"}
+# Wykres słupkowy: Ilość grup użycia
+ggplot(data3, aes(x = grupa_uzycia)) +
+  geom_bar() +
+  labs(title = "Liczebność grupy użycia", x = "Grupa użycia (godz./dzień)", y = "Liczba osób")
+
+# Wykres słupkowy: Niski sen
+ggplot(data3, aes(x = niski_sen, fill = niski_sen)) +
+  geom_bar(show.legend = FALSE) +
+  coord_flip() + # Obrócenie wykresu
+  theme_classic() +
+  labs(title = "Kto śpi dłużej?", x = "", y = "Liczba osób")
+
+# Boxplot: Sen w grupach użycia
+ggplot(data3, aes(x = grupa_uzycia, y = sen_godz)) +
+  geom_boxplot() +
+  labs(title = "Sen w grupach użycia", x = "Grupa użycia (godz./dzień)", y = "Sen (godz./noc)")
+```
+  Po połączeniu grup czasu korzystania z podziałem snu widać, że osoby z większych przedziałów czasu częściej wpadają do grupy <7h snu. W praktyce wygląda to tak, że wraz ze wzrostem godzin w social mediach rośnie odsetek osób z „niskim snem”. To jest spójne z tym, co potem wychodzi w testach i korelacjach.
+  
+# 4. Analiza opisowa
+
+## 4.1 Ogólna tabela opisowa
+```{r, fig.cap="Tabela opisowa ogólna"}
+# Oglna tabela opisowa
+
+opis_danych <- data.frame(
+  "Nazwa zmiennej" = names(data3),
+  "Typ danych" = sapply(data3, class),
+  "Przyklady" = sapply(data3, function(x) paste0(head(x, 3), collapse = ", ")),
+  check.names = FALSE
+)
+
+kable(opis_danych, row.names = FALSE, align = "l") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"), 
+    full_width = FALSE, 
+    position = "left"
+  )
+
+# Kategorie
+kable_wplywa <- as.data.frame(table(data3$wplywa_na_nauke))
+kable(kable_wplywa, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+kable_plec <- as.data.frame(table(data3$plec))
+kable(kable_plec, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+kable_platforma <- as.data.frame(table(data3$platforma))
+kable(kable_platforma, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+# Podstawowe statystyki 
+stat_podst <- data.frame(
+  Zmienna = c("czas_sm_godz", "sen_godz", "wynik_uzaleznienia"),
+  Średnia = c(mean(data3$czas_sm_godz), mean(data3$sen_godz), mean(data3$wynik_uzaleznienia)),
+  Odchylenie_sd = c(sd(data3$czas_sm_godz), sd(data3$sen_godz), sd(data3$wynik_uzaleznienia))
+)
+kable(stat_podst, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+# Mediany i Kwartyle
+stat_kwartyle <- data.frame(
+  Zmienna = c("czas_sm_godz", "sen_godz"),
+  Mediana = c(median(data3$czas_sm_godz), median(data3$sen_godz)),
+  Q1 = c(quantile(data3$czas_sm_godz, 0.25), quantile(data3$sen_godz, 0.25)),
+  Q3 = c(quantile(data3$czas_sm_godz, 0.75), quantile(data3$sen_godz, 0.75))
+)
+kable(stat_kwartyle, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+  W badaniu było prawie równo kobiet i mężczyzn: 353 kobiety i 352 mężczyzn. Najczęściej wskazywane platformy to Instagram (249), TikTok (154) i Facebook (123). Jeśli chodzi o wpływ na naukę, to 453 osoby odpowiedziały „Yes”, a 252 „No”, czyli większość studentów deklaruje, że social media wpływają na ich naukę.
+  
+## 4.2 Tabela opisowa w grupach 
+```{r, fig.cap="Tabela opisowa w grupach"}
+wynik_opis <- data3 %>%
+  group_by(wplywa_na_nauke) %>%
+  summarise(
+    n = n(),
+    srednia_czas_sm_godz = mean(czas_sm_godz),
+    mediana_czas_sm_godz = median(czas_sm_godz),
+    srednia_sen_godz = mean(sen_godz),
+    mediana_sen_godz = median(sen_godz),
+    srednia_wynik_uzaleznienia = mean(wynik_uzaleznienia),
+    .groups = "drop"
+  )
+
+kable(t(wynik_opis)) %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+  W grupie „No” średni czas w social mediach wyniósł 3,90h, a w grupie „Yes” 5,50h. Sen w grupie „No” to średnio 7,81h, a w grupie „Yes” 6,30h. Wynik uzależnienia też mocno się różni: „No” ma średnio 4,59, a „Yes” 7,75. To pokazuje, że osoby deklarujące wpływ na naukę realnie mają gorsze wskaźniki w czasie, śnie i uzależnieniu.
+  
+# 5. Wnioskowanie 
+
+## 5.1 Korelacja i wykres zależność czasu w social mediach do długości snu
+```{r, fig.cap="Zależność czasu w social mediach do długości snu"}
+korelacja <- cor.test(data3$czas_sm_godz, data3$sen_godz, method = "spearman", exact = FALSE)
+
+korelacja_tabela <- broom::tidy(korelacja) %>%
+  mutate(
+    estimate = round(estimate, 3),
+    p.value = format.pval(p.value, digits = 3, eps = 0.001)
+  )
+
+kable(t(korelacja_tabela)) %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+
+
+ggplot(data3, aes(czas_sm_godz, sen_godz)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", formula = y ~ x, se = TRUE)
+```
+  Użyłem korelacji Spearmana, bo to bezpieczne przy danych, które nie muszą być idealnie normalne. Wyszła bardzo silna ujemna zależność: rho = -0,814 i p-value < 0,001. To oznacza, że im więcej godzin w social mediach, tym krócej śpią badani. Związek jest mocny i trudno go tłumaczyć przypadkiem.
+  
+## 5.2 Korelacja i wykres zależność czasu w social mediach a wynikiem uzależnienia
+```{r, fig.cap="Zależność czasu w social mediach a wynikiem uzależnienia"}
+korelacja1 <- cor.test(data3$czas_sm_godz, data3$wynik_uzaleznienia, method = "spearman", exact = FALSE)
+
+korelacja1_tabela <- broom::tidy(korelacja1) %>%
+  mutate(
+    estimate = round(estimate, 3),
+    p.value = format.pval(p.value, digits = 3, eps = 0.001)
+  )
+
+kable(t(korelacja1_tabela)) %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+
+ggplot(data3, aes(czas_sm_godz, wynik_uzaleznienia)) + 
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", formula = y ~ x, se = TRUE)
+```
+  Tutaj też wyszła silna dodatnia korelacja: rho = 0,838 i p-value < 0,001. To oznacza, że im więcej czasu w social mediach, tym wyższy wynik uzależnienia. Związek jest mocny i pokazuje, że czas korzystania jest ważnym czynnikiem związanym z poziomem uzależnienia.
+
+## 5.3 Korelacja czasu i snu w podgrupach (Yes/No)
+```{r, fig.cap="Zależność czasu w social mediach i długości snu w podgrupach (Yes/No)"}
+korelacja2 <- data3 %>%
+  group_by(wplywa_na_nauke) %>%
+  summarise(
+    n = n(),
+    rho = cor(czas_sm_godz, sen_godz, method = "spearman"),
+    p_value = format.pval(cor.test(czas_sm_godz, sen_godz, method="spearman", exact=FALSE)$p.value, digits = 3, eps = 0.001),
+    .groups = "drop"
+  )
+
+kable(korelacja2) %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+ggplot(data3, aes(czas_sm_godz, sen_godz)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE) +
+  facet_wrap(~ wplywa_na_nauke) +
+  labs(x = "Czas w social mediach (godz./dzień)", y = "Sen (godz./noc)")
+```
+  Sprawdziłem korelację czasu i snu osobno w grupach „No” i „Yes”. W grupie „No” wyszło rho = -0,376, a w grupie „Yes” rho = -0,672 (w obu przypadkach p-value < 0,001). To oznacza, że związek „więcej social mediów = mniej snu” jest dużo silniejszy u osób, które czują wpływ na naukę.
+
+## 5.4 Test różnic: sen w grupie Yes vs No
+```{r, fig.cap="Różnice senu w grupie Yes vs No"}
+p <- tapply(data3$sen_godz, data3$wplywa_na_nauke, \(x) shapiro.test(x)$p.value)
+
+p <- data.frame(
+  grupa = names(p),
+  p_shapiro = as.numeric(p)
+)
+kable(p, align = "l", caption = "Test Shapiro-Wilka w grupach (Yes/No)") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+if(all(p > 0.05)) {
+  wynik <- t.test(sen_godz ~ wplywa_na_nauke, data = data3)
+  efekt <- cohens_d(sen_godz ~ wplywa_na_nauke, data = data3)
+} else { 
+  wynik <- wilcox.test(sen_godz ~ wplywa_na_nauke, data = data3)
+  efekt <- wilcox_effsize(sen_godz ~ wplywa_na_nauke, data = data3)
+}
+
+wynik_tabela <- broom::tidy(wynik) %>%
+  mutate(p.value = scales::pvalue(p.value, accuracy = 0.001))
+
+kable(t(wynik_tabela), caption = "Wynik testu") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+kable(efekt, align = "l", caption = "Wielkość efektu") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+ggplot(data3, aes(x = wplywa_na_nauke, y = sen_godz)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.15, outlier.shape = NA) +
+  geom_jitter(width = 0.12, alpha = 0.25) +
+  labs(
+    title = "Czy sen wpływa w grupach na naukę (Yes/No)",
+    x = "Wpływa na naukę",
+    y = "Godziny snu"
+  )
+```
+  Najpierw sprawdziłem normalność rozkładów i wyszło, że w obu grupach normalność nie jest spełniona (p-value Shapiro < 0,05). Dlatego użyłem testu Wilcoxona. Wynik był istotny (p-value < 0,001), więc grupa „Yes” rzeczywiście śpi krócej niż „No”. Dodatkowo efekt wyszedł duży (effsize ≈ 0,64, czyli duży), więc to nie jest mała różnica.
+
+## 5.5 ANOVA: wynik uzaleznienia vs platforma
+```{r, fig.cap="Wynik uzaleznienia vs platforma"}
+
+fit <- aov(wynik_uzaleznienia ~ platforma, data = data3)
+
+p_shapiro <- shapiro.test(residuals(fit))$p.value
+p_bartlett <- bartlett.test(wynik_uzaleznienia ~ platforma, data = data3)$p.value
+
+p_shapiro_fmt <- format.pval(p_shapiro, eps = 0.001, digits = 3)
+p_bartlett_fmt <- format.pval(p_bartlett, eps = 0.001, digits = 3)
+
+df_wynik <- data.frame(
+  Shapiro_Wilk = p_bartlett_fmt,
+  P_Value = p_bartlett_fmt
+)
+
+kable(df_wynik, align = "l", col.names = c("p-value Shapiro-Wilk", "p-value Bartlett"), digits = 10) %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+if (p_shapiro > 0.05 && p_bartlett > 0.05) {
+  wynik_anova <- broom::tidy(fit)
+  wynik_tukey <- broom::tidy(TukeyHSD(fit))
+
+  kable(wynik_anova, align = "l", caption = "ANOVA: wynik uzależnienia ~ platforma") %>%
+    kable_styling(full_width = FALSE, position = "left")
+  
+  kable(wynik_tukey, align = "l", caption = "Tukey HSD: porównania par platform") %>%
+    kable_styling(full_width = FALSE, position = "left")
+} else {
+  wynik_kruskal <- broom::tidy(kruskal.test(wynik_uzaleznienia ~ platforma, data = data3))
+}
+kable(t(wynik_kruskal), caption = "Kruskal-Wallis dla uzależnienia i platform") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+ggplot(data3, aes(x = platforma, y = wynik_uzaleznienia)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.15, outlier.shape = NA) +
+  geom_jitter(width = 0.12, alpha = 0.25) +
+  coord_flip() +
+  labs(
+    title = "Wynik uzależnienia w podziale na platformy",
+    x = "Platforma",
+    y = "Wynik uzależnienia"
+  )
+```
+  Sprawdziłem warunki ANOVA i wyszło, że normalność i jednorodność wariancji nie są spełnione (p-value < 0,001). Dlatego zamiast ANOVA użyłem testu Kruskala–Wallisa. Wynik był bardzo istotny ≈ 227,40, p-value jest ekstremalnie małe, więc poziom uzależnienia różni się między platformami. To znaczy, że nie wszystkie aplikacje „działają tak samo” pod względem wyniku uzależnienia.
+
+## 5.6 Model regresja liniowa dla snu
+```{r, fig.cap="Model regresja liniowa dla snu"}
+
+model_sen <- lm( sen_godz ~ czas_sm_godz + wiek + plec + zdrowie_psychiczne + wplywa_na_nauke, data = data3 ) 
+data3_cent <- data3 %>% 
+  mutate( czas_sm_godz_c = as.numeric(scale(czas_sm_godz, center = TRUE, scale = FALSE)),
+          wiek_c = as.numeric(scale(wiek, center = TRUE, scale = FALSE)),
+          zdrowie_psychiczne_c = as.numeric(scale(zdrowie_psychiczne, center = TRUE, scale = FALSE))
+          ) 
+
+model_sen_c <- lm( sen_godz ~ czas_sm_godz_c + wiek_c + plec + zdrowie_psychiczne_c + wplywa_na_nauke, 
+                   data = data3_cent )
+
+kable(broom::tidy(model_sen_c)) %>% 
+  kable_styling(full_width = FALSE, position = "left")
+
+  vif_wynik <- vif(model_sen)
+  vif_tab <- data.frame(
+  Zmienna = names(vif_wynik),
+  VIF = as.numeric(vif_wynik)
+)
+kable(vif_tab, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+# Wykres diagnostyczny dla "reszty vs dopasowanie", "Q-Q", "odstających punktów"
+diag_plot <- function(ktory, x, y) {
+  plot(model_sen, which = ktory, ann = FALSE, sub.caption = "")
+  title(xlab = x, ylab = y)
+}
+
+# Teraz wywołanie przejdzie gładko:
+diag_plot(1, "Wartości dopasowane", "Reszty")
+diag_plot(2, "Kwantyle teoretyczne", "Kwantyle próby")
+diag_plot(4, "Indeks obserwacji", "Odległość Cooka")
+
+
+
+ 
+ggplot(data3, aes(x = czas_sm_godz, y = sen_godz)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm", formula = y ~ x, se = TRUE) +
+  labs(
+    x = "Czas w social media (godziny)",
+    y = "Sen (godziny)",
+    title = "Sen a czas w social media"
+  )
+```
+  Zbudowałem model liniowy dla snu i użyłem wersji z centrowaniem zmiennych. Najmocniejszy wpływ ma czas w social mediach. Współczynnik ≈ -0,559 (p-value < 0,001), czyli więcej social mediów oznacza mniej snu. Zdrowie psychiczne ma dodatni wpływ ≈ 0,102, p-value ≈ 0,037, czyli lepszy wynik zdrowia psychicznego wiąże się z dłuższym snem. Sama odpowiedź „Yes” ma dodatkowy negatywny efekt ≈ -0,300 (p-value < 0,001). Wiek i płeć w tym modelu nie były istotne.
+
+  Sprawdziłem też VIF i wartości nie są wysokie wynosi około 4,590, więc nie wygląda to na problem silnej współliniowości.
+
+## 5.7 Testy dla grup snu
+```{r, fig.cap="Wykres dla uzaleznienia w grupach snu (<7h vs >=7h)"}
+
+# Sprawdzenie normalności Shapiro Wilk
+p_sen <- tapply(data3$wynik_uzaleznienia, data3$niski_sen, \(x) shapiro.test(x)$p.value)
+
+# Tabelka z p-value Shapiro Wilk
+p_sen_tab <- data.frame(
+  grupa = names(p_sen),
+  p_value = format.pval(as.numeric(p_sen), digits = 3, eps = 0.001)
+)
+kable(p_sen_tab, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+# Wybór testu 
+if(all(p_sen > 0.05)) {
+  wynik_sen <- t.test(wynik_uzaleznienia ~ niski_sen, data = data3)
+} else {
+  wynik_sen <- wilcox.test(wynik_uzaleznienia ~ niski_sen, data = data3)
+}
+
+# Boxplot + Punkty
+p_wykres <- format.pval(wynik_sen$p.value, eps = 0.001)
+
+ggplot(data3, aes(x = niski_sen, y = wynik_uzaleznienia)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.15, alpha = 0.4) +
+  labs(
+    x = "Grupa snu",
+    y = "Wynik uzależnienia",
+    title = paste0("Porównanie grup (p = ", p_wykres, ")")
+  )
+# Statystyki opisowe 
+med_7mniej  <- median(data3$wynik_uzaleznienia[data3$niski_sen == "<7h"])
+med_7wiecej <- median(data3$wynik_uzaleznienia[data3$niski_sen == ">=7h"])
+
+mean_7mniej  <- mean(data3$wynik_uzaleznienia[data3$niski_sen == "<7h"])
+mean_7wiecej <- mean(data3$wynik_uzaleznienia[data3$niski_sen == ">=7h"])
+
+wyniki_opis <- data.frame(
+  grupa = c("<7h", ">=7h"),
+  mediana = c(med_7mniej, med_7wiecej),
+  srednia = c(mean_7mniej, mean_7wiecej)
+)
+
+                
+                
+kable(wyniki_opis, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+# Wynik testu i p-value
+broom::tidy(wynik_sen) %>%
+  mutate(p.value = format.pval(p.value, eps = 0.001)) %>% 
+  t() %>%
+  kable() %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+```
+  Porównałem poziom uzależnienia między osobami śpiącymi <7h i ≥7h. Ponieważ rozkłady nie były normalne, użyłem testu Wilcoxona. Wynik wyszedł istotny (p < 0,001), więc grupy różnią się poziomem uzależnienia.
+
+  W praktyce osoby śpiące <7h mają wyższy wynik uzależnienia średnia 7,59 i mediana 8. Osoby śpiące ≥7h mają niższy wynik średnia 5,24 i mediana 5. To wygląda jak mocne powiązanie krótkiego snu z większym uzależnieniem.
+
+## 5.8 Model logit dla wpływu na naukę
+```{r, fig.cap="Model logitowy dla wpływu na naukę"}
+
+# Przygotowanie zmiennej 0/1 (Yes = 1, No = 0)
+
+data_logit <- data3 %>%
+  mutate(wplyw01 = if_else(wplywa_na_nauke == "Yes", 1, 0))
+
+# Model logitowy
+model_logit <- glm(
+  wplyw01 ~ czas_sm_godz + sen_godz + wiek + plec,
+  data = data_logit,
+  family = binomial
+)
+
+# Wyniki modelu 
+wynik_logit <- broom::tidy(model_logit)
+kable(wynik_logit, align = "l") %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+# Współczynniki regresji (OR)
+or_tab <- data.frame(
+  Zmienna = names(coef(model_logit)),
+  OR = exp(coef(model_logit))
+)
+kable(or_tab, align = "l", row.names = FALSE) %>%
+  kable_styling(full_width = FALSE, position = "left")
+```
+  Zrobiłem model logitowy, który przewiduje odpowiedź „Yes/No” (wpływ na naukę) na podstawie czasu w social mediach, snu, wieku i płci. Najsilniejszy czynnik to czas korzystania: jest istotny i ma duży efekt OR ≈ 6,812. Czyli każda dodatkowa godzina mocno zwiększa szansę odpowiedzi „Yes”.
+
+  Sen działa odwrotnie OR ≈ 0,477 istotne), więc więcej snu zmniejsza szansę deklarowania wpływu. Wiek też zmniejsza szansę OR ≈ 0,71 istotne. Płeć nie wyszła istotna (p-value > 0,05), więc w tym modelu nie widać różnicy między kobietami i mężczyznami.
+
+# 6. Podsumowanie i wnioski końcowe
+```{r, echo=FALSE, fig.cap="Podsumowanie i wnioski końcowe"}
+```
+  W danych nie było braków ani duplikatów, więc analiza była prosta technicznie. Najwięcej osób korzysta z social mediów 4–6 godzin dziennie bo aż 393 osoby, a prawie połowa śpi poniżej 7 godzin, 359 osób. Większość ankietowanych 453 osób deklaruje, że social media wpływają na ich naukę.
+
+  Najważniejsze wyniki są spójne: czas w social mediach jest bardzo silnie powiązany z krótszym snem rho = -0,814 i wyższym uzależnieniem rho = 0,838. Grupa „Yes” realnie różni się od „No” ma więcej godzin social mediów, mniej snu i wyższy wynik uzależnienia. Test Wilcoxona potwierdził, że różnica w śnie jest istotna, a efekt jest duży.
+
+  Widać też różnice uzależnienia między platformami dzięki testowi Kruskal–Wallis istotności. Model liniowy pokazał, że najważniejszy czynnik dla snu to czas w social mediach, a dodatkowo znaczenie mają zdrowie psychiczne i sama deklaracja wpływu na naukę. Model logitowy pokazał, że największy wpływ na odpowiedź „Yes” ma czas korzystania, a ochronnie działa sen i wiek. Ogólnie wnioski są jasne: większe korzystanie z social mediów idzie w parze z gorszym snem i wyższym uzależnieniem, szczególnie u osób, które same czują wpływ na naukę.
+
